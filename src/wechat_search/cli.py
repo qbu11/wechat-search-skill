@@ -133,17 +133,17 @@ def cmd_scrape(args):
         articles = scraper.filter_articles_by_date(articles, start_date, end_date)
 
     # 获取正文
-    if args.content and articles:
+    include_content = not args.no_content
+    if include_content and articles:
         logger.info(f"正在获取 {len(articles)} 篇文章正文...")
         for i, article in enumerate(articles):
             scraper.get_article_content_by_url(article)
             if i < len(articles) - 1:
                 time.sleep(args.interval)
 
-    # 输出
-    if args.output:
-        scraper.save_articles_to_csv(articles, args.output)
-        logger.info(f"结果已保存到: {args.output}")
+    # 输出（默认保存到 result.csv）
+    scraper.save_articles_to_csv(articles, args.output)
+    logger.info(f"结果已保存到: {args.output}")
 
     # 构建简洁输出（正文太长时截断）
     articles_output = []
@@ -153,7 +153,7 @@ def cmd_scrape(args):
             "publish_time": a.get("publish_time", ""),
             "link": a.get("link", ""),
         }
-        if args.content:
+        if include_content:
             content = a.get("content", "")
             item["content"] = content[:2000] + "..." if len(content) > 2000 else content
         articles_output.append(item)
@@ -209,7 +209,7 @@ def cmd_batch(args):
         "headers": headers,
         "max_pages_per_account": args.pages,
         "request_interval": args.interval,
-        "include_content": args.content,
+        "include_content": not args.no_content,
         "output_file": output_file,
     }
 
@@ -223,7 +223,7 @@ def cmd_batch(args):
             "publish_time": a.get("publish_time", ""),
             "link": a.get("link", ""),
         }
-        if args.content:
+        if not args.no_content:
             content = a.get("content", "")
             item["content"] = content[:1000] + "..." if len(content) > 1000 else content
         articles_output.append(item)
@@ -326,16 +326,16 @@ def main():
     sp_scrape.add_argument("account", help="公众号名称")
     sp_scrape.add_argument("--pages", type=int, default=5, help="最大页数（每页5篇，默认5）")
     sp_scrape.add_argument("--days", type=int, default=30, help="时间范围（最近N天，默认30）")
-    sp_scrape.add_argument("--content", action="store_true", help="是否获取文章正文")
+    sp_scrape.add_argument("--no-content", action="store_true", help="不获取文章正文（默认获取）")
     sp_scrape.add_argument("--interval", type=int, default=5, help="请求间隔秒数（默认5）")
-    sp_scrape.add_argument("--output", "-o", help="输出CSV文件路径")
+    sp_scrape.add_argument("--output", "-o", default="result.csv", help="输出CSV文件路径（默认 result.csv）")
 
     # batch
     sp_batch = subparsers.add_parser("batch", help="批量爬取多个公众号")
     sp_batch.add_argument("accounts", help="公众号列表，逗号分隔")
     sp_batch.add_argument("--pages", type=int, default=3, help="每号最大页数（默认3）")
     sp_batch.add_argument("--days", type=int, default=30, help="时间范围（默认30天）")
-    sp_batch.add_argument("--content", action="store_true", help="是否获取正文")
+    sp_batch.add_argument("--no-content", action="store_true", help="不获取正文（默认获取）")
     sp_batch.add_argument("--interval", type=int, default=10, help="请求间隔秒数（默认10）")
     sp_batch.add_argument("--output-dir", help="输出目录")
 
