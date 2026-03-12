@@ -209,11 +209,15 @@ recent_articles = [
 
 ### 5. 爬取文章正文
 
+**重要：必须使用 Chrome DevTools MCP，不能用 requests/WebFetch**
+
+搜狗链接有反爬虫机制，直接用 `requests` 或 `WebFetch` 会被阻止。必须通过浏览器访问。
+
 ```javascript
-// 通过搜狗链接跳转到微信原文
+// 通过搜狗链接跳转到微信原文（浏览器会自动跟随跳转）
 chrome_devtools__navigate_page({ url: article.link })
 
-// 提取文章内容
+// 等待页面加载完成后提取内容
 chrome_devtools__evaluate_script({
   function: `() => {
     const title = document.querySelector('#activity-name')?.textContent.trim() || document.title;
@@ -225,6 +229,11 @@ chrome_devtools__evaluate_script({
   }`
 })
 ```
+
+**批量抓取策略：**
+- 逐个访问链接（不能并行，避免触发限流）
+- 每篇文章间隔 3-5 秒
+- 30 篇文章预计耗时 2-3 分钟
 
 **微信公众号页面 DOM 结构：**
 - `#activity-name`: 文章标题
@@ -271,8 +280,9 @@ with open('output.csv', 'w', encoding='utf-8', newline='') as f:
 3. **合法使用**: 仅用于学习和研究目的
 4. **正文获取**: 加 `--content` 会显著增加耗时，按需使用
 5. **日志输出**: 日志输出到 stderr，JSON 结果输出到 stdout
-6. **搜狗链接**: 搜狗返回的是跳转链接，需要通过浏览器访问才能获取真实微信文章 URL
+6. **搜狗链接**: 搜狗返回的是跳转链接，必须通过**浏览器**访问才能获取真实微信文章 URL。直接用 `requests`/`WebFetch` 会被反爬虫机制阻止
 7. **时间戳解析**: 搜狗页面使用 `timeConvert('秒级时间戳')` 函数显示时间
+8. **批量抓取**: 使用 Chrome DevTools MCP 逐个访问链接，每篇间隔 3-5 秒，30 篇约需 2-3 分钟
 
 ---
 
@@ -303,6 +313,25 @@ wechat-search batch "公众号A,公众号B,公众号C" --pages 5 --days 30 --con
 3. 按时间过滤
 4. 打开感兴趣的链接获取正文
 5. 生成 CSV 输出
+
+**如果用户要求"全部内容"或"完整文章"：**
+
+必须使用 Chrome DevTools MCP 批量抓取，不能用 Python requests：
+
+```javascript
+// 伪代码流程
+for each article in articles:
+  1. chrome_devtools__navigate_page({ url: article.link })  // 跟随跳转
+  2. 等待 2 秒
+  3. chrome_devtools__evaluate_script() 提取 #js_content
+  4. 等待 3 秒（避免限流）
+  5. 将内容添加到结果
+```
+
+**禁止做法：**
+- ❌ 用 Python requests 直接访问搜狗链接（会被阻止）
+- ❌ 用 WebFetch 工具（会被阻止）
+- ❌ 并行访问多个链接（会触发限流）
 
 ---
 
