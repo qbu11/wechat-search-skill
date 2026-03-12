@@ -292,12 +292,14 @@ def cmd_install_skill(args):
     from pathlib import Path
     import shutil
 
-    pkg_dir = Path(__file__).resolve().parent.parent.parent
-    skill_src = pkg_dir / "skill" / "SKILL.md"
+    # 优先从包内 skill_data/ 找（pip install 后的标准路径）
+    skill_src = Path(__file__).resolve().parent / "skill_data" / "SKILL.md"
+    if not skill_src.exists():
+        # 开发模式：从项目根目录的 skill/ 找
+        pkg_dir = Path(__file__).resolve().parent.parent.parent
+        skill_src = pkg_dir / "skill" / "SKILL.md"
     if not skill_src.exists():
         skill_src = pkg_dir.parent / "skill" / "SKILL.md"
-    if not skill_src.exists():
-        skill_src = Path(__file__).resolve().parent / "skill_data" / "SKILL.md"
 
     if not skill_src.exists():
         _print_json({"success": False, "error": "找不到 SKILL.md，请确认包完整性"})

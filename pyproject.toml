@@ -28,3 +28,6 @@ dev = ["pytest", "black", "mypy"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+wechat_search = ["skill_data/**/*"]
