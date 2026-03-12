@@ -284,6 +284,12 @@ if login.login():
 4. Logs go to stderr, JSON results go to stdout
 5. For educational and research purposes only
 
+## Acknowledgments / 致谢
+
+This project is based on [WeMediaSpider](https://github.com/nicekate/WeMediaSpider), refactored into a self-contained pip-installable CLI tool. Thanks to the original contributors.
+
+本项目基于 [WeMediaSpider](https://github.com/nicekate/WeMediaSpider) 重构为自包含的 pip 可安装 CLI 工具，感谢原项目贡献者。
+
 ## License
 
-MIT
+MIT (see [LICENSE](LICENSE)) — includes original WeMediaSpider copyright.
