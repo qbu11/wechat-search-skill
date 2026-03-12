@@ -16,69 +16,118 @@
 用法:
     wechat-search status
     wechat-search search "人民日报"
-    wechat-search scrape "人民日报" --pages 5 --days 30 --content
+    wechat-search scrape "人民日报" --pages 5 --days 30
     wechat-search batch "人民日报,新华社" --pages 3 --days 7
 """
 
 import argparse
+import io
 import json
 import os
 import sys
 import time
 from datetime import datetime, timedelta
 
-from wechat_search.spider.log.utils import logger
-from wechat_search.spider.wechat.login import WeChatSpiderLogin
-from wechat_search.spider.wechat.scraper import WeChatScraper, BatchWeChatScraper
-from wechat_search.spider.wechat.paths import get_default_output_dir, get_wechat_cache_file
+
+def _ensure_utf8_stdout():
+    """强制 stdout/stderr 使用 UTF-8 编码，解决 Windows 终端乱码问题"""
+    if sys.platform == 'win32':
+        # 尝试设置 console code page
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        except Exception:
+            pass
+
+    # 用 UTF-8 包装 stdout
+    if hasattr(sys.stdout, 'buffer'):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+    if hasattr(sys.stderr, 'buffer'):
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+
+
+def _print_json(data):
+    """安全地输出 JSON 到 stdout，确保 UTF-8 编码"""
+    text = json.dumps(data, ensure_ascii=False, indent=2)
+    try:
+        sys.stdout.write(text + '\n')
+        sys.stdout.flush()
+    except (UnicodeEncodeError, OSError):
+        # 最后兜底：用 ensure_ascii=True 输出纯 ASCII
+        text_ascii = json.dumps(data, ensure_ascii=True, indent=2)
+        sys.stdout.write(text_ascii + '\n')
+        sys.stdout.flush()
+
+
+# 延迟导入，避免在 --help 时触发 loguru 初始化
+def _lazy_imports():
+    from wechat_search.spider.log.utils import logger
+    from wechat_search.spider.wechat.login import WeChatSpiderLogin
+    from wechat_search.spider.wechat.scraper import WeChatScraper, BatchWeChatScraper
+    from wechat_search.spider.wechat.paths import get_default_output_dir, get_wechat_cache_file
+    return logger, WeChatSpiderLogin, WeChatScraper, BatchWeChatScraper, get_default_output_dir, get_wechat_cache_file
 
 
 def cmd_status(args):
     """检查登录状态"""
+    logger, WeChatSpiderLogin, *_ = _lazy_imports()
     login_mgr = WeChatSpiderLogin()
     status = login_mgr.check_login_status()
 
-    result = {
+    _print_json({
         "success": status["isLoggedIn"],
         "data": status
-    }
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    })
     return 0 if status["isLoggedIn"] else 1
 
 
 def cmd_login(args):
     """执行扫码登录"""
+    logger, WeChatSpiderLogin, _, _, _, get_wechat_cache_file = _lazy_imports()
     login_mgr = WeChatSpiderLogin()
 
     if login_mgr.load_cache() and login_mgr.validate_cache():
         status = login_mgr.check_login_status()
-        result = {
+        _print_json({
             "success": True,
             "data": {"message": "已有有效登录缓存", **status}
-        }
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        })
         return 0
 
     print("请在弹出的浏览器窗口中扫码登录...", file=sys.stderr)
     if login_mgr.login():
-        result = {
+        _print_json({
             "success": True,
             "data": {"message": "登录成功", "cache_file": get_wechat_cache_file()}
-        }
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        })
         return 0
 
-    result = {"success": False, "error": "登录失败"}
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    _print_json({"success": False, "error": "登录失败"})
     return 1
+
+
+def _ensure_login():
+    """确保已登录，未登录时自动引导扫码。返回 (login_mgr, ok)"""
+    _, WeChatSpiderLogin, *_ = _lazy_imports()
+    login_mgr = WeChatSpiderLogin()
+    if login_mgr.load_cache() and login_mgr.validate_cache():
+        return login_mgr, True
+
+    print("检测到未登录或登录已过期，正在启动扫码登录...", file=sys.stderr)
+    print("请在弹出的浏览器窗口中用微信扫码登录。", file=sys.stderr)
+    if login_mgr.login():
+        print("登录成功！继续执行...", file=sys.stderr)
+        return login_mgr, True
+
+    _print_json({"success": False, "error": "登录失败，请手动执行 wechat-search login"})
+    return login_mgr, False
 
 
 def cmd_search(args):
     """搜索公众号"""
-    login_mgr = WeChatSpiderLogin()
-    if not (login_mgr.load_cache() and login_mgr.validate_cache()):
-        result = {"success": False, "error": "未登录或登录已过期，请先执行 login"}
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+    logger, _, WeChatScraper, *_ = _lazy_imports()
+    login_mgr, ok = _ensure_login()
+    if not ok:
         return 1
 
     token = login_mgr.get_token()
@@ -86,24 +135,22 @@ def cmd_search(args):
     scraper = WeChatScraper(token, headers)
 
     accounts = scraper.search_account(args.query)
-    result = {
+    _print_json({
         "success": True,
         "data": {
             "query": args.query,
             "count": len(accounts),
             "accounts": accounts
         }
-    }
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    })
     return 0
 
 
 def cmd_scrape(args):
     """爬取单个公众号"""
-    login_mgr = WeChatSpiderLogin()
-    if not (login_mgr.load_cache() and login_mgr.validate_cache()):
-        result = {"success": False, "error": "未登录或登录已过期，请先执行 login"}
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+    logger, _, WeChatScraper, *_ = _lazy_imports()
+    login_mgr, ok = _ensure_login()
+    if not ok:
         return 1
 
     token = login_mgr.get_token()
@@ -113,8 +160,7 @@ def cmd_scrape(args):
     # 搜索公众号
     search_results = scraper.search_account(args.account)
     if not search_results:
-        result = {"success": False, "error": f"未找到公众号: {args.account}"}
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        _print_json({"success": False, "error": f"未找到公众号: {args.account}"})
         return 1
 
     account_info = search_results[0]
@@ -137,11 +183,14 @@ def cmd_scrape(args):
     if include_content and articles:
         logger.info(f"正在获取 {len(articles)} 篇文章正文...")
         for i, article in enumerate(articles):
-            scraper.get_article_content_by_url(article)
+            try:
+                scraper.get_article_content_by_url(article)
+            except Exception as e:
+                logger.warning(f"获取第 {i+1} 篇正文失败: {e}")
             if i < len(articles) - 1:
                 time.sleep(args.interval)
 
-    # 输出（默认保存到 result.csv）
+    # 保存 CSV
     scraper.save_articles_to_csv(articles, args.output)
     logger.info(f"结果已保存到: {args.output}")
 
@@ -158,25 +207,24 @@ def cmd_scrape(args):
             item["content"] = content[:2000] + "..." if len(content) > 2000 else content
         articles_output.append(item)
 
-    result = {
+    _print_json({
         "success": True,
         "data": {
             "account": account_name,
             "fakeid": fakeid,
             "total": len(articles_output),
+            "output_file": os.path.abspath(args.output),
             "articles": articles_output
         }
-    }
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    })
     return 0
 
 
 def cmd_batch(args):
     """批量爬取多个公众号"""
-    login_mgr = WeChatSpiderLogin()
-    if not (login_mgr.load_cache() and login_mgr.validate_cache()):
-        result = {"success": False, "error": "未登录或登录已过期，请先执行 login"}
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+    logger, _, _, BatchWeChatScraper, get_default_output_dir, _ = _lazy_imports()
+    login_mgr, ok = _ensure_login()
+    if not ok:
         return 1
 
     token = login_mgr.get_token()
@@ -188,8 +236,7 @@ def cmd_batch(args):
     accounts = [a.strip() for a in accounts if a.strip()]
 
     if not accounts:
-        result = {"success": False, "error": "公众号列表为空"}
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        _print_json({"success": False, "error": "公众号列表为空"})
         return 1
 
     end_date = datetime.now().date()
@@ -228,7 +275,7 @@ def cmd_batch(args):
             item["content"] = content[:1000] + "..." if len(content) > 1000 else content
         articles_output.append(item)
 
-    result = {
+    _print_json({
         "success": True,
         "data": {
             "accounts": accounts,
@@ -236,8 +283,7 @@ def cmd_batch(args):
             "output_file": output_file,
             "articles": articles_output
         }
-    }
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    })
     return 0
 
 
@@ -246,31 +292,25 @@ def cmd_install_skill(args):
     from pathlib import Path
     import shutil
 
-    # 找到 skill 源文件
-    pkg_dir = Path(__file__).resolve().parent.parent.parent  # wechat-search-skill/
-    # 尝试两个可能的位置：开发模式 vs 安装模式
+    pkg_dir = Path(__file__).resolve().parent.parent.parent
     skill_src = pkg_dir / "skill" / "SKILL.md"
     if not skill_src.exists():
-        # editable install: 从 src 同级的 skill 目录找
         skill_src = pkg_dir.parent / "skill" / "SKILL.md"
     if not skill_src.exists():
-        # 最后尝试从包内 data 找
         skill_src = Path(__file__).resolve().parent / "skill_data" / "SKILL.md"
 
     if not skill_src.exists():
-        print(json.dumps({"success": False, "error": f"找不到 SKILL.md，请确认包完整性"}, ensure_ascii=False, indent=2))
+        _print_json({"success": False, "error": "找不到 SKILL.md，请确认包完整性"})
         return 1
 
     home = Path.home()
     targets = []
 
-    # Claude Code: ~/.claude/skills/wechat-search/SKILL.md
     claude_dir = home / ".claude" / "skills" / "wechat-search"
     claude_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(skill_src, claude_dir / "SKILL.md")
     targets.append(str(claude_dir / "SKILL.md"))
 
-    # references 目录
     ref_src = skill_src.parent / "references"
     if ref_src.exists():
         ref_dst = claude_dir / "references"
@@ -278,33 +318,32 @@ def cmd_install_skill(args):
             shutil.rmtree(ref_dst)
         shutil.copytree(ref_src, ref_dst)
 
-    # OpenClaw: ~/.openclaw/skills/wechat-search/SKILL.md
     openclaw_dir = home / ".openclaw" / "skills" / "wechat-search"
     try:
         openclaw_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(skill_src, openclaw_dir / "SKILL.md")
         targets.append(str(openclaw_dir / "SKILL.md"))
     except Exception:
-        pass  # OpenClaw 可选
+        pass
 
-    # 同时删除旧的 commands 文件（如果存在）
     old_cmd = home / ".claude" / "commands" / "wechat-search.md"
     if old_cmd.exists():
         old_cmd.unlink()
         targets.append(f"removed: {old_cmd}")
 
-    result = {
+    _print_json({
         "success": True,
         "data": {
             "message": "Skill 文档已安装",
             "installed_to": targets
         }
-    }
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    })
     return 0
 
 
 def main():
+    _ensure_utf8_stdout()
+
     parser = argparse.ArgumentParser(
         description="微信公众号爬虫 CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
