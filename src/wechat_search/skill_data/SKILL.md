@@ -1,6 +1,6 @@
 # 微信公众号检索
 
-微信公众号文章搜索与爬取工具。通过微信公众平台 API 检索公众号和文章。
+微信公众号文章搜索与爬取工具。支持两种搜索模式：按公众号名称搜索和按文章关键词搜索。
 
 ## 触发词
 
@@ -13,7 +13,7 @@ wechat-search, 微信公众号搜索, 公众号检索, 微信文章搜索
 pip install ./wechat-search-skill
 
 # 或从 Git 仓库安装
-pip install git+https://github.com/user/wechat-search-skill.git
+pip install git+https://github.com/qbu11/wechat-search-skill.git
 ```
 
 ## 前置条件
@@ -22,7 +22,26 @@ pip install git+https://github.com/user/wechat-search-skill.git
 - Chrome 浏览器（登录时需要）
 - 需要先登录微信公众平台（扫码登录，缓存有效期约4天）
 
-## 使用流程
+---
+
+## 智能决策：自动识别搜索类型
+
+**第一步：判断用户输入类型**
+
+```bash
+# 先尝试搜索公众号
+wechat-search search "用户输入的关键词"
+```
+
+**判断依据：**
+- 如果返回的公众号列表包含明确相关的账号 → 用户输入的是**公众号名称** → 走场景 A
+- 如果返回的公众号列表不相关或为空 → 用户输入的是**文章关键词** → 走场景 B
+
+---
+
+## 场景 A：按公众号名称搜索
+
+用户知道具体公众号名称，想获取该公众号的文章。使用 `wechat-search` CLI 工具。
 
 ### 1. 检查登录状态
 
@@ -74,27 +93,176 @@ wechat-search batch "公众号1,公众号2,公众号3" --pages 3 --days 7 --cont
 - `--output-dir DIR`: 输出目录（默认 ~/WeChatSpider）
 - 其他参数同 scrape
 
-## 输出格式
+### 6. 无头服务器部署（导入/导出登录凭证）
 
-所有命令输出 JSON，结构统一:
+适用于在无头服务器上使用，无需扫码：
 
+```bash
+# 在有浏览器的机器上导出凭证
+wechat-search export-login
+
+# 在无头服务器上导入凭证
+wechat-search import-login "导出的凭证字符串"
+```
+
+---
+
+## 场景 B：按文章关键词搜索
+
+用户提供的是**文章主题关键词**，需要跨公众号搜索相关文章。使用**搜狗微信搜索**。
+
+### 1. 打开搜狗微信搜索
+
+```javascript
+// 使用 Chrome DevTools MCP
+chrome_devtools__navigate_page({
+  url: "https://weixin.sogou.com/weixin?type=2&query=关键词&ie=utf8"
+})
+```
+
+**URL 参数说明：**
+- `type=2`: 搜索公众号文章（type=1 为搜索公众号）
+- `query`: 搜索关键词
+- `ie=utf8`: 编码格式
+
+### 2. 提取文章列表数据
+
+```javascript
+chrome_devtools__evaluate_script({
+  function: `() => {
+    const items = document.querySelectorAll('.news-list li');
+    const results = [];
+    items.forEach(item => {
+      const titleEl = item.querySelector('h3 a');
+      const timeScript = item.querySelector('.s-p script');
+      const accountLink = item.querySelector('.account');
+      const summaryEl = item.querySelector('.txt-info');
+
+      let timestamp = '';
+      if (timeScript) {
+        const match = timeScript.textContent.match(/timeConvert\\('(\d+)'\\)/);
+        if (match) timestamp = match[1];
+      }
+
+      let accountName = '';
+      if (accountLink) accountName = accountLink.textContent.trim();
+
+      if (titleEl && timestamp) {
+        const ts = parseInt(timestamp);
+        const date = new Date(ts * 1000);
+        results.push({
+          title: titleEl.textContent.trim(),
+          account: accountName,
+          timestamp: ts,
+          date: date.toISOString().split('T')[0],
+          link: titleEl.href,
+          summary: summaryEl ? summaryEl.textContent.trim() : ''
+        });
+      }
+    });
+    return results;
+  }`
+})
+```
+
+**返回数据结构：**
 ```json
 {
-  "success": true,
-  "data": {
-    "account": "公众号名称",
-    "total": 10,
-    "articles": [
-      {
-        "title": "文章标题",
-        "publish_time": "2026-03-01 10:00:00",
-        "link": "https://mp.weixin.qq.com/s/...",
-        "content": "文章正文（Markdown格式，仅 --content 时）"
-      }
-    ]
-  }
+  "title": "文章标题",
+  "account": "公众号名称",
+  "timestamp": 1773327658,
+  "date": "2026-03-12",
+  "link": "搜狗跳转链接",
+  "summary": "文章摘要"
 }
 ```
+
+### 3. 翻页收集更多数据
+
+```javascript
+// 方法1：点击下一页按钮
+chrome_devtools__click({ selector: ".np" })
+
+// 方法2：构造翻页 URL
+chrome_devtools__navigate_page({
+  url: "https://weixin.sogou.com/weixin?query=关键词&page=2&type=2"
+})
+```
+
+**注意：** 搜狗微信搜索最多显示约10页结果，每页约10篇文章。
+
+### 4. 时间过滤（筛选最近N天）
+
+```python
+import datetime
+
+# 计算时间阈值（例如最近7天）
+cutoff_date = datetime.datetime.now() - datetime.timedelta(days=7)
+
+# 过滤
+recent_articles = [
+    a for a in all_articles
+    if a["timestamp"] >= cutoff_date.timestamp()
+    and "关键词" in a["title"].lower()
+]
+```
+
+### 5. 爬取文章正文
+
+```javascript
+// 通过搜狗链接跳转到微信原文
+chrome_devtools__navigate_page({ url: article.link })
+
+// 提取文章内容
+chrome_devtools__evaluate_script({
+  function: `() => {
+    const title = document.querySelector('#activity-name')?.textContent.trim() || document.title;
+    const account = document.querySelector('#js_name')?.textContent.trim() || '';
+    const publishTime = document.querySelector('#publish_time')?.textContent.trim() || '';
+    const contentEl = document.querySelector('#js_content');
+    const content = contentEl ? contentEl.innerText.trim() : '';
+    return { title, account, publishTime, content, url: window.location.href };
+  }`
+})
+```
+
+**微信公众号页面 DOM 结构：**
+- `#activity-name`: 文章标题
+- `#js_name`: 公众号名称
+- `#publish_time`: 发布时间
+- `#js_content`: 文章正文
+
+### 6. 输出 CSV 文件
+
+```python
+import csv
+
+with open('output.csv', 'w', encoding='utf-8', newline='') as f:
+    writer = csv.writer(f)
+    writer.writerow(['标题', '公众号', '发布时间', '链接', '内容摘要'])
+    for article in articles:
+        writer.writerow([
+            article['title'],
+            article['account'],
+            article['publish_time'] or article['date'],
+            article['link'],
+            article.get('summary', '')[:500]  # 摘要截取500字符
+        ])
+```
+
+---
+
+## 工具链选择
+
+| 场景 | 推荐工具 | 原因 |
+|------|---------|------|
+| 按公众号名搜索 | `wechat-search` CLI | 专门工具，支持登录态，可直接爬取 |
+| 按文章关键词搜索 | Chrome DevTools MCP | 需要解析搜狗搜索页面，提取时间戳 |
+| 批量爬取文章 | `wechat-search batch` | 效率高，支持时间范围过滤 |
+| 单篇文章抓取 | Chrome DevTools + JS 提取 | 绕过搜狗跳转，直接获取微信原文 |
+| 无头服务器部署 | `export-login` / `import-login` | 无需扫码，凭证可移植 |
+
+---
 
 ## 注意事项
 
@@ -103,6 +271,10 @@ wechat-search batch "公众号1,公众号2,公众号3" --pages 3 --days 7 --cont
 3. **合法使用**: 仅用于学习和研究目的
 4. **正文获取**: 加 `--content` 会显著增加耗时，按需使用
 5. **日志输出**: 日志输出到 stderr，JSON 结果输出到 stdout
+6. **搜狗链接**: 搜狗返回的是跳转链接，需要通过浏览器访问才能获取真实微信文章 URL
+7. **时间戳解析**: 搜狗页面使用 `timeConvert('秒级时间戳')` 函数显示时间
+
+---
 
 ## 典型场景
 
@@ -123,3 +295,18 @@ wechat-search scrape "某公众号" --pages 10 --days 90 --content --output resu
 ```bash
 wechat-search batch "公众号A,公众号B,公众号C" --pages 5 --days 30 --content
 ```
+
+### 场景D: 按关键词搜索文章（跨公众号）
+
+1. 用 Chrome DevTools MCP 打开搜狗微信搜索
+2. 提取文章列表数据
+3. 按时间过滤
+4. 打开感兴趣的链接获取正文
+5. 生成 CSV 输出
+
+---
+
+## 相关工具
+
+- `chrome-browser-automation` skill: Chrome DevTools MCP 配置
+- `union-search-skill`: 跨平台搜索（支持微信文章搜索）

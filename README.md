@@ -45,6 +45,17 @@ wechat-search install-skill
 
 ## 快速开始
 
+### 两种搜索模式
+
+本工具支持两种搜索模式：
+
+1. **按公众号名称搜索**：用户知道具体公众号名，使用 CLI 工具直接爬取
+2. **按文章关键词搜索**：用户想跨公众号搜索相关文章，需配合 Chrome DevTools MCP 使用搜狗微信搜索
+
+**自动判断**：先运行 `wechat-search search "关键词"`，如果返回的公众号列表不相关，则切换到搜狗搜索模式。
+
+### CLI 快速上手
+
 ```bash
 # 1. 登录（首次使用，需微信扫码）
 wechat-search login
@@ -66,6 +77,27 @@ wechat-search scrape "人民日报" --pages 5 --days 30 --content --output resul
 
 # 7. 批量爬取
 wechat-search batch "人民日报,新华社,CCTV" --pages 3 --days 7 --content
+
+# 8. 导出登录凭证（用于无头服务器部署）
+wechat-search export-login
+
+# 9. 在无头服务器上导入凭证
+wechat-search import-login "导出的凭证字符串"
+```
+
+### 无头服务器部署
+
+如果需要在无浏览器的服务器上使用，可以先在本地机器上登录并导出凭证：
+
+```bash
+# 在本地机器（有浏览器）
+wechat-search login
+wechat-search export-login
+# 复制输出的凭证字符串
+
+# 在无头服务器上
+wechat-search import-login "粘贴凭证字符串"
+wechat-search status  # 验证登录成功
 ```
 
 ## 命令参考
@@ -78,6 +110,8 @@ wechat-search batch "人民日报,新华社,CCTV" --pages 3 --days 7 --content
 | `scrape <account>` | 爬取单个公众号文章 |
 | `batch <accounts>` | 批量爬取（逗号分隔） |
 | `install-skill` | 部署 Skill 到 Claude Code / OpenClaw |
+| `export-login` | 导出登录凭证（用于无头服务器） |
+| `import-login <data>` | 导入登录凭证 |
 
 ### scrape 参数
 
@@ -187,6 +221,17 @@ This deploys SKILL.md to `~/.claude/skills/wechat-search/`. After that, trigger 
 
 ## Quick Start
 
+### Two Search Modes
+
+This tool supports two search modes:
+
+1. **Search by Account Name**: When you know the specific account name, use CLI directly
+2. **Search by Article Keywords**: When you want to search articles across accounts, use Sogou WeChat Search with Chrome DevTools MCP
+
+**Auto-detection**: Run `wechat-search search "keyword"` first. If returned accounts are irrelevant, switch to Sogou search mode.
+
+### CLI Quick Start
+
 ```bash
 # 1. Login (first time, requires WeChat QR scan)
 wechat-search login
@@ -208,6 +253,27 @@ wechat-search scrape "人民日报" --pages 5 --days 30 --content --output resul
 
 # 7. Batch scrape multiple accounts
 wechat-search batch "人民日报,新华社,CCTV" --pages 3 --days 7 --content
+
+# 8. Export credentials (for headless servers)
+wechat-search export-login
+
+# 9. Import credentials on headless server
+wechat-search import-login "exported-credential-string"
+```
+
+### Headless Server Deployment
+
+For servers without a browser, export credentials from a local machine first:
+
+```bash
+# On local machine (with browser)
+wechat-search login
+wechat-search export-login
+# Copy the credential string
+
+# On headless server
+wechat-search import-login "paste-credential-string"
+wechat-search status  # Verify login success
 ```
 
 ## Command Reference
@@ -220,6 +286,8 @@ wechat-search batch "人民日报,新华社,CCTV" --pages 3 --days 7 --content
 | `scrape <account>` | Scrape a single account |
 | `batch <accounts>` | Batch scrape (comma-separated) |
 | `install-skill` | Deploy Skill to Claude Code / OpenClaw |
+| `export-login` | Export credentials (for headless servers) |
+| `import-login <data>` | Import credentials |
 
 ### scrape options
 
