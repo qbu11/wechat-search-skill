@@ -211,7 +211,7 @@ recent_articles = [
 
 **重要：必须使用 Chrome DevTools MCP，不能用 requests/WebFetch**
 
-搜狗链接有反爬虫机制，直接用 `requests` 或 `WebFetch` 会被阻止。必须通过浏览器访问。
+搜狗链接有反爬虫机制，直接用 `requests` 或 `WebFetch` 会被重定向到 `/antispider/` 页面。必须通过浏览器访问才能绕过。
 
 ```javascript
 // 通过搜狗链接跳转到微信原文（浏览器会自动跟随跳转）
@@ -308,15 +308,17 @@ wechat-search batch "公众号A,公众号B,公众号C" --pages 5 --days 30 --con
 
 ### 场景D: 按关键词搜索文章（跨公众号）
 
+**完整工作流：**
+
 1. 用 Chrome DevTools MCP 打开搜狗微信搜索
-2. 提取文章列表数据
+2. 提取文章列表数据（标题、链接、摘要）
 3. 按时间过滤
-4. 打开感兴趣的链接获取正文
-5. 生成 CSV 输出
+4. 保存为 CSV 文件
+5. **使用 Chrome DevTools MCP 批量抓取正文**
 
 **如果用户要求"全部内容"或"完整文章"：**
 
-必须使用 Chrome DevTools MCP 批量抓取，不能用 Python requests：
+必须使用 Chrome DevTools MCP 逐个访问链接：
 
 ```javascript
 // 伪代码流程
@@ -324,14 +326,23 @@ for each article in articles:
   1. chrome_devtools__navigate_page({ url: article.link })  // 跟随跳转
   2. 等待 2 秒
   3. chrome_devtools__evaluate_script() 提取 #js_content
-  4. 等待 3 秒（避免限流）
+  4. 等待 3-5 秒（避免限流）
   5. 将内容添加到结果
 ```
 
+**为什么不能用 Python requests？**
+
+搜狗有反爬虫机制，直接用 requests 访问会被重定向到 `/antispider/` 页面。只有浏览器才能绕过。
+
 **禁止做法：**
-- ❌ 用 Python requests 直接访问搜狗链接（会被阻止）
-- ❌ 用 WebFetch 工具（会被阻止）
+- ❌ 用 Python requests 直接访问搜狗链接（会被反爬虫阻止）
+- ❌ 用 WebFetch 工具（会被反爬虫阻止）
 - ❌ 并行访问多个链接（会触发限流）
+
+**推荐做法：**
+- ✅ 使用 Chrome DevTools MCP 逐个访问
+- ✅ 每篇间隔 3-5 秒
+- ✅ 30 篇文章约需 2-3 分钟
 
 ---
 
