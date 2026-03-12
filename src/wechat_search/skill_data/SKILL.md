@@ -308,27 +308,93 @@ wechat-search batch "公众号A,公众号B,公众号C" --pages 5 --days 30 --con
 
 ### 场景D: 按关键词搜索文章（跨公众号）
 
-**完整工作流：**
+**完整自动化工作流：**
 
-1. 用 Chrome DevTools MCP 打开搜狗微信搜索
-2. 提取文章列表数据（标题、链接、摘要）
-3. 按时间过滤
-4. 保存为 CSV 文件
-5. **使用 Chrome DevTools MCP 批量抓取正文**
+当用户提供文章关键词时，AI 应自动执行以下步骤：
 
-**如果用户要求"全部内容"或"完整文章"：**
+#### 第一阶段：搜索和筛选
 
-必须使用 Chrome DevTools MCP 逐个访问链接：
+1. 打开搜狗微信搜索
+2. 提取文章列表数据（标题、链接、摘要、时间戳）
+3. 按时间过滤（如最近 N 天）
+4. 保存为临时 CSV
+
+#### 第二阶段：批量抓取全文（自动执行）
+
+**重要：当用户要求"全部内容"、"完整文章"、"正文"时，必须自动执行此阶段，无需再次询问用户。**
 
 ```javascript
-// 伪代码流程
-for each article in articles:
-  1. chrome_devtools__navigate_page({ url: article.link })  // 跟随跳转
-  2. 等待 2 秒
-  3. chrome_devtools__evaluate_script() 提取 #js_content
-  4. 等待 3-5 秒（避免限流）
-  5. 将内容添加到结果
+// 自动化批量抓取流程（AI 应自动执行）
+const results = [];
+
+for (let i = 0; i < articles.length; i++) {
+  const article = articles[i];
+
+  console.log(`[${i+1}/${articles.length}] 抓取: ${article.title}`);
+
+  // 1. 访问搜狗链接（自动跳转到微信原文）
+  await chrome_devtools__navigate_page({ url: article.link });
+
+  // 2. 等待页面加载
+  await sleep(2000);
+
+  // 3. 提取文章内容
+  const content = await chrome_devtools__evaluate_script({
+    function: `() => {
+      const title = document.querySelector('#activity-name')?.textContent.trim() || document.title;
+      const account = document.querySelector('#js_name')?.textContent.trim() || '';
+      const publishTime = document.querySelector('#publish_time')?.textContent.trim() || '';
+      const contentEl = document.querySelector('#js_content');
+      const content = contentEl ? contentEl.innerText.trim() : '';
+      return { title, account, publishTime, content, url: window.location.href };
+    }`
+  });
+
+  // 4. 保存结果
+  results.push({
+    ...article,
+    account: content.account,
+    publishTime: content.publishTime,
+    content: content.content,
+    wechatUrl: content.url
+  });
+
+  // 5. 等待间隔（避免限流）
+  if (i < articles.length - 1) {
+    console.log(`等待 4 秒...`);
+    await sleep(4000);
+  }
+}
+
+// 6. 输出完整 CSV
+saveToCSV(results, 'articles_with_full_content.csv');
 ```
+
+#### 执行规则
+
+**自动触发条件：**
+- 用户说"我要全部内容"
+- 用户说"不要给我摘要"
+- 用户说"获取完整文章"
+- 用户说"抓取正文"
+
+**执行时机：**
+- 在保存 CSV 之前，先完成批量抓取
+- 不要先保存摘要 CSV，再问用户是否需要全文
+- 直接一次性输出包含完整内容的 CSV
+
+**进度提示：**
+```
+正在批量抓取 10 篇文章的完整内容...
+[1/10] 抓取: OpenClaw 技能体系 ✓
+[2/10] 抓取: OpenClaw 技能系统架构 ✓
+...
+[10/10] 抓取: OpenClaw Skill 是什么 ✓
+
+已保存到: articles_with_full_content.csv
+```
+
+#### 技术限制
 
 **为什么不能用 Python requests？**
 
@@ -338,10 +404,13 @@ for each article in articles:
 - ❌ 用 Python requests 直接访问搜狗链接（会被反爬虫阻止）
 - ❌ 用 WebFetch 工具（会被反爬虫阻止）
 - ❌ 并行访问多个链接（会触发限流）
+- ❌ 先保存摘要 CSV，再询问用户是否需要全文（应直接抓取）
 
 **推荐做法：**
 - ✅ 使用 Chrome DevTools MCP 逐个访问
 - ✅ 每篇间隔 3-5 秒
+- ✅ 自动执行，无需用户确认
+- ✅ 显示实时进度
 - ✅ 30 篇文章约需 2-3 分钟
 
 ---
