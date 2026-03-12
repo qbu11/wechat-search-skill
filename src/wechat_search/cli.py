@@ -343,6 +343,65 @@ def cmd_install_skill(args):
     return 0
 
 
+def cmd_export_login(args):
+    """导出登录凭证为可分享字符串"""
+    from wechat_search.spider.wechat.cache_codec import encode_cache_file
+    from wechat_search.spider.wechat.paths import get_wechat_cache_file
+
+    cache_file = get_wechat_cache_file()
+    if not os.path.exists(cache_file):
+        _print_json({"success": False, "error": "未找到登录缓存，请先执行 wechat-search login"})
+        return 1
+
+    try:
+        encoded = encode_cache_file(cache_file)
+        _print_json({
+            "success": True,
+            "data": {
+                "message": "登录凭证已导出，请复制下方字符串到目标机器执行 import-login",
+                "encoded": encoded
+            }
+        })
+        return 0
+    except Exception as e:
+        _print_json({"success": False, "error": f"导出失败: {e}"})
+        return 1
+
+
+def cmd_import_login(args):
+    """从编码字符串导入登录凭证"""
+    from wechat_search.spider.wechat.cache_codec import decode_to_cache_file
+    from wechat_search.spider.wechat.paths import get_wechat_cache_file
+
+    encoded_str = args.token_string
+    if not encoded_str:
+        _print_json({"success": False, "error": "请提供编码字符串"})
+        return 1
+
+    cache_file = get_wechat_cache_file()
+    try:
+        data = decode_to_cache_file(encoded_str, cache_file)
+        # 验证导入后是否可用
+        _, WeChatSpiderLogin, *_ = _lazy_imports()
+        login_mgr = WeChatSpiderLogin()
+        if login_mgr.load_cache() and login_mgr.validate_cache():
+            status = login_mgr.check_login_status()
+            _print_json({
+                "success": True,
+                "data": {"message": "登录凭证导入成功且验证有效", **status}
+            })
+            return 0
+        else:
+            _print_json({
+                "success": True,
+                "data": {"message": "登录凭证已导入，但验证失败（可能已过期）", "cache_file": cache_file}
+            })
+            return 0
+    except Exception as e:
+        _print_json({"success": False, "error": f"导入失败: {e}"})
+        return 1
+
+
 def main():
     _ensure_utf8_stdout()
 
@@ -383,6 +442,13 @@ def main():
     # install-skill
     subparsers.add_parser("install-skill", help="安装 Skill 文档到 Claude Code / OpenClaw")
 
+    # export-login
+    subparsers.add_parser("export-login", help="导出登录凭证（用于复制到服务器）")
+
+    # import-login
+    sp_import = subparsers.add_parser("import-login", help="导入登录凭证（从其他机器复制）")
+    sp_import.add_argument("token_string", help="export-login 导出的编码字符串")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -396,6 +462,8 @@ def main():
         "scrape": cmd_scrape,
         "batch": cmd_batch,
         "install-skill": cmd_install_skill,
+        "export-login": cmd_export_login,
+        "import-login": cmd_import_login,
     }
 
     return cmd_map[args.command](args)
