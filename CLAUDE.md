@@ -1,80 +1,102 @@
 # wechat-search-skill
 
-微信公众号文章搜索与爬取工具。
+微信公众号文章搜索与爬取工具。pip 可安装，CLI 驱动，支持 Claude Code / OpenClaw Skill 集成。
 
 ## 项目结构
 
 ```
-src/wechat_search/
-├── cli.py                 # CLI 入口（wechat-search 命令）
-├── __init__.py
-├── skill_data/SKILL.md    # Skill 文档（pip install 后可部署）
-└── spider/
-    ├── log/utils.py       # 日志工具（loguru）
-    └── wechat/
-        ├── login.py       # 登录模块（QR 扫码 + 凭证缓存）
-        ├── scraper.py     # 爬虫核心（单号/批量/异步）
-        ├── utils.py       # API 请求工具函数
-        ├── paths.py       # 路径管理
-        ├── cache_codec.py # 凭证导入导出编解码
-        └── async_utils.py # 异步爬取支持
+wechat-search-skill/
+├── CLAUDE.md                          # 本文件
+├── pyproject.toml                     # 包定义，入口 wechat-search
+├── VERSIONS.md                        # 多版本管理（DrissionPage / agent-browser / Selenium）
+├── wechat-article-search-workflow.md  # 场景 B 搜狗搜索工作流参考文档
+├── src/wechat_search/
+│   ├── cli.py                         # CLI 入口，所有子命令定义
+│   ├── skill_data/SKILL.md            # Skill 文档（随 pip 包分发）
+│   └── spider/
+│       ├── log/utils.py               # loguru 日志
+│       └── wechat/
+│           ├── login.py               # QR 扫码登录 + 凭证缓存（DrissionPage）
+│           ├── scraper.py             # 爬虫核心（WeChatScraper / BatchWeChatScraper）
+│           ├── utils.py               # 微信公众平台 API 请求
+│           ├── paths.py               # 路径管理（缓存目录、输出目录）
+│           ├── cache_codec.py         # 凭证导入导出（zlib + CRC32 + Base64）
+│           └── async_utils.py         # 异步批量爬取
+└── skill/                             # 旧版 skill 目录（已迁移到 skill_data）
 ```
+
+## 分支管理
+
+| 分支 | 浏览器方案 | 状态 |
+|------|-----------|------|
+| `master` | DrissionPage（纯 Python，推荐） | 活跃 |
+| `agent-browser-version` | agent-browser（Vercel，Node.js） | 备选 |
+| 本地备份 `wechat-search-skill-selenium-backup/` | Selenium | 归档 |
 
 ## 开发约定
 
 - Python >= 3.8，无 GUI 依赖
-- 所有命令输出 JSON 到 stdout，日志输出到 stderr
-- Windows 环境需处理 UTF-8 编码（cli.py 中 `_ensure_utf8_stdout()`）
-- 不使用 `console.log` / `print` 输出非结构化内容
-- 请求间隔 >= 3 秒，避免被微信限流
+- 所有 CLI 命令输出 JSON 到 stdout，日志输出到 stderr（loguru）
+- Windows 必须处理 UTF-8：`_ensure_utf8_stdout()` + `_print_json()`
+- 请求间隔 >= 3 秒，避免微信限流
+- 登录模块使用 DrissionPage 操控 Chrome（CDP 端口 9222）
+- 凭证缓存在 `~/.wechat_spider/cache/`，有效期约 4-7 天
 
 ## CLI 命令
 
-| 命令 | 说明 |
-|------|------|
-| `status` | 检查登录状态 |
-| `login` | 扫码登录 |
-| `search <query>` | 搜索公众号 |
-| `scrape <account>` | 爬取单个公众号 |
-| `batch <accounts>` | 批量爬取（逗号分隔） |
-| `export-login` | 导出凭证（无头服务器用） |
-| `import-login <data>` | 导入凭证 |
-| `install-skill` | 部署 SKILL.md 到 ~/.claude/skills/ |
+```bash
+wechat-search status                    # 检查登录状态
+wechat-search login                     # 扫码登录（弹出 Chrome）
+wechat-search search "关键词"            # 搜索公众号
+wechat-search scrape "公众号" --pages 5 --days 30 --content --output result.csv
+wechat-search batch "号1,号2" --pages 3 --days 7 --content --output-dir ./out
+wechat-search export-login              # 导出凭证字符串
+wechat-search import-login "凭证字符串"  # 导入凭证
+wechat-search install-skill             # 部署 SKILL.md 到 ~/.claude/skills/
+```
 
 ## 两种搜索模式
 
-### 场景 A：按公众号名称（CLI）
+### 场景 A：按公众号名称（CLI 工具）
 
-直接使用 `wechat-search scrape/batch` 命令，依赖微信公众平台 API + 登录态。
+`wechat-search search/scrape/batch`，依赖微信公众平台 API + 登录态。
 
-### 场景 B：按文章关键词（Chrome DevTools MCP）
+### 场景 B：按文章关键词（Chrome DevTools MCP + 搜狗）
 
-通过搜狗微信搜索 `weixin.sogou.com` 获取文章列表，再用浏览器逐个访问获取正文。
+通过 `weixin.sogou.com` 搜索文章，用 Chrome DevTools MCP 提取列表和正文。
 
-关键限制：
+关键限制（已验证）：
 - 搜狗有反爬虫机制，`requests` / `WebFetch` 会被重定向到 `/antispider/`
-- 必须使用 Chrome DevTools MCP 浏览器访问
+- **必须**使用 Chrome DevTools MCP 浏览器访问
 - 逐个访问，每篇间隔 3-5 秒
+- 当用户要求"全部内容"/"完整文章"/"正文"时，自动批量抓取，不要先保存摘要再询问
+
+## 打包与部署
+
+```bash
+# 安装
+pip install .
+# 或从 GitHub
+pip install git+https://github.com/qbu11/wechat-search-skill.git
+
+# 部署 Skill
+wechat-search install-skill
+# → ~/.claude/skills/wechat-search/SKILL.md
+# → ~/.openclaw/skills/wechat-search/SKILL.md
+```
 
 ## 测试
 
 ```bash
-# 检查登录
-wechat-search status
-
-# 搜索
-wechat-search search "人民日报"
-
-# 爬取（标题+链接）
-wechat-search scrape "人民日报" --pages 2 --days 7
-
-# 爬取（含正文）
-wechat-search scrape "人民日报" --pages 2 --days 7 --content
+wechat-search status                                          # 登录态
+wechat-search search "人民日报"                                # 搜索
+wechat-search scrape "人民日报" --pages 2 --days 7             # 爬取标题
+wechat-search scrape "人民日报" --pages 2 --days 7 --content   # 爬取正文
+wechat-search export-login                                     # 导出凭证
 ```
 
-## 打包发布
+## 已知问题
 
-```bash
-pip install .
-wechat-search install-skill
-```
+- Windows 终端 GBK 编码导致 JSON 输出乱码 → 已通过 `_ensure_utf8_stdout()` 修复
+- 搜狗链接 requests 跟随跳转被反爬虫拦截 → 只能用浏览器
+- 单篇文章抓取失败会中断批量任务 → 已加 try/except 容错
