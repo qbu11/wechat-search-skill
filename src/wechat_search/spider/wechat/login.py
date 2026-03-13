@@ -1,10 +1,36 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-微信公众平台登录模块
-==================
+微信公众平台登录模块 (DrissionPage 版本)
+==========================================
 
 实现微信公众平台的自动化登录流程，获取爬虫运行所需的认证信息。
+使用 DrissionPage 替代 Selenium，支持：
+    - 接管已打开的 Chrome 浏览器（通过 9222 端口）
+    - 创建新的 Chrome 浏览器并暴露调试端口
+    - 与 Chrome DevTools MCP 共享浏览器实例
+
+工作流程:
+    1. 优先接管已存在的 Chrome（9222 端口）
+    2. 若不存在则创建新的 Chrome 并暴露调试端口
+    3. 等待用户扫码登录
+    4. 提取 token 和 cookie 并缓存
+
+缓存策略:
+    - 登录信息保存在用户数据目录，避免权限问题
+    - 默认缓存有效期 4 天（微信 token 通常 4-7 天过期）
+    - 每次使用前自动验证缓存是否仍然有效
+    - 支持手动清除缓存强制重新登录
+
+优势:
+    - 无需下载 chromedriver（版本无关）
+    - 可与 Chrome DevTools MCP 共享浏览器
+    - 性能更好，启动更快
+    - 代码更简洁
+
+依赖:
+    - DrissionPage: 浏览器自动化
+    - requests: HTTP 请求（用于验证 token）
 """
 
 import json
@@ -15,14 +41,11 @@ import platform
 import tempfile
 import shutil
 import subprocess
+import re
 from datetime import datetime, timedelta
 
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.webdriver.support.wait import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from DrissionPage import ChromiumPage, ChromiumOptions
 import requests
-import re
 
 from wechat_search.spider.log.utils import logger
 from wechat_search.spider.wechat.paths import get_wechat_cache_file
@@ -33,25 +56,53 @@ CACHE_FILE = get_wechat_cache_file()
 # 缓存有效期：4 天（微信 token 一般 4-7 天过期）
 CACHE_EXPIRE_HOURS = 24 * 4
 
+# Chrome 调试端口（与 Chrome DevTools MCP 共享）
+CHROME_DEBUG_PORT = 9222
+
 
 class WeChatSpiderLogin:
     """
-    微信公众平台登录管理器
+    微信公众平台登录管理器 (DrissionPage 版本)
 
     负责处理登录认证的完整生命周期，包括：
     - 缓存的读取、验证和保存
-    - 浏览器的启动和配置
+    - 浏览器的接管或创建（支持与 MCP 共享）
     - 登录流程的执行和监控
     - 资源的清理和释放
+
+    Attributes:
+        token: 访问令牌，用于 API 请求认证
+        cookies: 会话 cookie 字典
+        cache_file: 缓存文件路径
+        cache_expire_hours: 缓存过期时间（小时）
+        page: DrissionPage ChromiumPage 实例
+        temp_user_data_dir: 临时用户数据目录
+        debug_port: Chrome 调试端口
+
+    Example:
+        >>> login = WeChatSpiderLogin()
+        >>> if login.login():
+        ...     token = login.get_token()
+        ...     headers = login.get_headers()
+        ...     # 使用 token 和 headers 进行爬取
     """
 
-    def __init__(self, cache_file=CACHE_FILE):
+    def __init__(self, cache_file=CACHE_FILE, debug_port=CHROME_DEBUG_PORT):
+        """
+        初始化登录管理器
+
+        Args:
+            cache_file: 缓存文件路径，默认使用用户数据目录下的文件
+            debug_port: Chrome 调试端口，默认 9222（与 MCP 共享）
+        """
         self.token = None
         self.cookies = None
         self.cache_file = cache_file
         self.cache_expire_hours = CACHE_EXPIRE_HOURS
-        self.driver = None
+        self.page = None
         self.temp_user_data_dir = None
+        self.debug_port = debug_port
+        self._created_browser = False  # 标记是否由本实例创建浏览器
 
     def save_cache(self):
         """保存登录信息到缓存文件"""
@@ -163,27 +214,91 @@ class WeChatSpiderLogin:
             return False
 
     def _setup_chrome_options(self):
-        """配置 Chrome 浏览器启动选项"""
-        options = webdriver.ChromeOptions()
+        """
+        配置 Chrome 浏览器启动选项
 
+        设置各种 Chrome 参数以优化爬虫场景下的表现：
+        - 使用临时用户数据目录，避免影响用户的 Chrome 配置
+        - 暴露调试端口，让 Chrome DevTools MCP 可以连接
+        - 禁用不必要的功能以提升性能
+        - 隐藏自动化特征以降低被检测风险
+
+        Returns:
+            ChromiumOptions: 配置好的选项对象
+        """
+        co = ChromiumOptions()
+
+        # 创建临时目录保存用户数据
         self.temp_user_data_dir = tempfile.mkdtemp()
-        options.add_argument(f"--user-data-dir={self.temp_user_data_dir}")
+        co.set_user_data_path(self.temp_user_data_dir)
 
-        options.add_argument("--disable-extensions")
-        options.add_argument("--disable-plugins")
-        options.add_argument("--disable-software-rasterizer")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--force-device-scale-factor=0.9")
-        options.add_argument("--high-dpi-support=0.9")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36")
+        # 设置调试端口（关键：让 MCP 可以连接）
+        co.set_local_port(self.debug_port)
+        co.set_argument('--remote-allow-origins=*')
 
-        return options
+        # 性能优化
+        co.no_imgs(True)  # 不加载图片（可选，提升速度）
+        co.set_argument('--disable-extensions')
+        co.set_argument('--disable-plugins')
+        co.set_argument('--disable-software-rasterizer')
+        co.set_argument('--disable-gpu')
+        co.set_argument('--no-sandbox')
+        co.set_argument('--disable-dev-shm-usage')
+
+        # 页面缩放
+        co.set_argument('--force-device-scale-factor=0.9')
+
+        # 隐藏自动化特征
+        co.set_argument('--disable-blink-features=AutomationControlled')
+
+        # 自定义用户代理
+        co.set_user_agent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36')
+
+        return co
+
+    def _connect_to_browser(self):
+        """
+        连接到 Chrome 浏览器
+
+        优先级：
+        1. 尝试接管已存在的 Chrome（通过调试端口）
+        2. 若不存在则创建新的 Chrome
+
+        Returns:
+            ChromiumPage: 浏览器页面对象，失败返回 None
+        """
+        # 方案1: 尝试接管已存在的 Chrome
+        logger.info(f"尝试接管已存在的 Chrome (端口 {self.debug_port})...")
+        try:
+            page = ChromiumPage(addr_or_opts=f'127.0.0.1:{self.debug_port}')
+            logger.success("成功接管已存在的 Chrome 浏览器")
+            self._created_browser = False
+            return page
+        except Exception as e:
+            logger.debug(f"无法接管现有浏览器: {e}")
+
+        # 方案2: 创建新的 Chrome
+        logger.info("未找到现有浏览器，创建新的 Chrome 实例...")
+        try:
+            co = self._setup_chrome_options()
+            page = ChromiumPage(addr_or_opts=co)
+            logger.success("成功创建新的 Chrome 浏览器")
+            self._created_browser = True
+            return page
+        except Exception as e:
+            logger.error(f"创建浏览器失败: {e}")
+            return None
 
     def _cleanup_chrome_processes(self):
-        """清理残留的 Chrome 进程"""
+        """
+        清理 Chrome 进程（仅当由本实例创建时）
+
+        注意：如果有其他程序（如 MCP）正在使用浏览器，不应该强制关闭
+        """
+        if not self._created_browser:
+            logger.debug("浏览器非本实例创建，跳过进程清理")
+            return
+
         try:
             system = platform.system()
             if system == "Windows":
@@ -197,7 +312,10 @@ class WeChatSpiderLogin:
             logger.warning(f"清理Chrome进程时出现警告: {e}")
 
     def _cleanup_temp_files(self):
-        """清理临时用户数据目录"""
+        """清理临时用户数据目录（仅当由本实例创建时）"""
+        if not self._created_browser:
+            return
+
         if self.temp_user_data_dir and os.path.exists(self.temp_user_data_dir):
             try:
                 shutil.rmtree(self.temp_user_data_dir, ignore_errors=True)
@@ -218,37 +336,37 @@ class WeChatSpiderLogin:
             logger.info("缓存无效或不存在，需要重新扫码登录")
             self.clear_cache()
 
-        self._cleanup_chrome_processes()
+        # 不再强制清理进程，因为可能正在与其他程序共享
+        # self._cleanup_chrome_processes()
 
         try:
-            logger.info("正在启动Chrome浏览器...")
+            logger.info("正在连接/启动 Chrome 浏览器...")
 
-            chrome_options = self._setup_chrome_options()
-
-            try:
-                service = ChromeService()
-                self.driver = webdriver.Chrome(service=service, options=chrome_options)
-                logger.success("Chrome浏览器启动成功")
-            except Exception as e:
-                logger.error(f"Chrome浏览器启动失败: {e}")
+            self.page = self._connect_to_browser()
+            if not self.page:
+                logger.error("浏览器连接/启动失败")
                 return False
 
-            self.driver.execute_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-            )
-
             logger.info("正在访问微信公众号平台...")
-            self.driver.get('https://mp.weixin.qq.com/')
+            self.page.get('https://mp.weixin.qq.com/')
             logger.success("页面加载完成")
 
             logger.info("请在浏览器窗口中扫码登录...")
             logger.info("等待登录完成（最长等待5分钟）...")
 
-            wait = WebDriverWait(self.driver, 300)
-            wait.until(EC.url_contains('token'))
+            # 等待 URL 包含 token
+            start_time = time.time()
+            timeout = 300  # 5 分钟
 
-            current_url = self.driver.current_url
-            logger.success("检测到登录成功！正在获取登录信息...")
+            while time.time() - start_time < timeout:
+                current_url = self.page.url
+                if 'token=' in current_url:
+                    logger.success("检测到登录成功！正在获取登录信息...")
+                    break
+                time.sleep(1)
+            else:
+                logger.error("登录超时（5分钟内未检测到登录成功）")
+                return False
 
             token_match = re.search(r'token=(\d+)', current_url)
             if token_match:
@@ -258,8 +376,9 @@ class WeChatSpiderLogin:
                 logger.error("无法从URL中提取token")
                 return False
 
-            raw_cookies = self.driver.get_cookies()
-            self.cookies = {item['name']: item['value'] for item in raw_cookies}
+            # 获取 cookies
+            raw_cookies = self.page.cookies(as_dict=True)
+            self.cookies = raw_cookies
             logger.success(f"Cookies获取成功，共{len(self.cookies)}个")
 
             if self.save_cache():
@@ -273,9 +392,10 @@ class WeChatSpiderLogin:
             return False
 
         finally:
-            if self.driver:
+            # 关闭浏览器（仅当由本实例创建时）
+            if self.page and self._created_browser:
                 try:
-                    self.driver.quit()
+                    self.page.quit()
                     logger.debug("浏览器已关闭")
                 except:
                     pass
