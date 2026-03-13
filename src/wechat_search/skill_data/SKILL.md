@@ -19,8 +19,18 @@ pip install git+https://github.com/qbu11/wechat-search-skill.git
 ## 前置条件
 
 - Python >= 3.8
-- Chrome 浏览器（登录时需要）
+- Chrome 浏览器（登录时需要，未安装时会给出平台对应的安装提示）
 - 需要先登录微信公众平台（扫码登录，缓存有效期约4天）
+
+### 环境自检
+
+首次使用或遇到问题时，运行环境自检：
+
+```bash
+wechat-search doctor
+```
+
+检查项：Python 版本、DrissionPage、Chrome 路径、端口 9222 状态、登录缓存、网络连通性。
 
 ---
 

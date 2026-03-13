@@ -28,6 +28,8 @@ import sys
 import time
 from datetime import datetime, timedelta
 
+import requests
+
 
 def _ensure_utf8_stdout():
     """强制 stdout/stderr 使用 UTF-8 编码，解决 Windows 终端乱码问题"""
@@ -287,6 +289,100 @@ def cmd_batch(args):
     return 0
 
 
+def cmd_doctor(args):
+    """环境自检：检查 Python、DrissionPage、Chrome、端口、缓存、网络"""
+    import platform
+    import socket
+
+    checks = {}
+
+    # 1. Python 版本
+    py_ver = platform.python_version()
+    py_ok = tuple(int(x) for x in py_ver.split(".")[:2]) >= (3, 8)
+    checks["python"] = {"version": py_ver, "ok": py_ok}
+    print(f"{'[OK]' if py_ok else '[FAIL]'} Python {py_ver}" + ("" if py_ok else " (需要 >= 3.8)"), file=sys.stderr)
+
+    # 2. DrissionPage
+    try:
+        import DrissionPage
+        dp_ver = getattr(DrissionPage, "__version__", "unknown")
+        checks["drissionpage"] = {"version": dp_ver, "ok": True}
+        print(f"[OK] DrissionPage {dp_ver}", file=sys.stderr)
+    except ImportError:
+        checks["drissionpage"] = {"ok": False, "error": "未安装"}
+        print("[FAIL] DrissionPage 未安装 (pip install DrissionPage)", file=sys.stderr)
+
+    # 3. Chrome 路径
+    from wechat_search.spider.wechat.login import _find_chrome_path
+    chrome_path = _find_chrome_path()
+    if chrome_path:
+        checks["chrome"] = {"path": chrome_path, "ok": True}
+        print(f"[OK] Chrome: {chrome_path}", file=sys.stderr)
+    else:
+        system = platform.system()
+        hints = {
+            "Windows": "winget install Google.Chrome",
+            "Darwin": "brew install --cask google-chrome",
+            "Linux": "sudo apt install google-chrome-stable",
+        }
+        hint = hints.get(system, "https://www.google.com/chrome/")
+        checks["chrome"] = {"ok": False, "hint": hint}
+        print(f"[FAIL] Chrome 未找到 — 安装: {hint}", file=sys.stderr)
+
+    # 4. 端口 9222 状态
+    port = 9222
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(2)
+            result = s.connect_ex(("127.0.0.1", port))
+            if result == 0:
+                # 端口有服务在监听，尝试判断是否可接管
+                port_status = "occupied_listening"
+                port_msg = f"端口 {port} 已有服务监听（可能可接管）"
+            else:
+                port_status = "available"
+                port_msg = f"端口 {port} 可用"
+    except Exception:
+        port_status = "available"
+        port_msg = f"端口 {port} 可用"
+
+    checks["port_9222"] = {"status": port_status, "ok": port_status in ("available", "occupied_listening")}
+    print(f"[OK] {port_msg}" if checks["port_9222"]["ok"] else f"[WARN] {port_msg}", file=sys.stderr)
+
+    # 5. 登录缓存状态
+    from wechat_search.spider.wechat.paths import get_wechat_cache_file
+    cache_file = get_wechat_cache_file()
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                cache_data = json.load(f)
+            cache_time = datetime.fromtimestamp(cache_data['timestamp'])
+            hours_ago = (datetime.now() - cache_time).total_seconds() / 3600
+            checks["cache"] = {"exists": True, "hours_ago": round(hours_ago, 1), "file": cache_file}
+            print(f"[OK] 登录缓存存在 ({hours_ago:.1f} 小时前保存)", file=sys.stderr)
+        except Exception as e:
+            checks["cache"] = {"exists": True, "error": str(e), "file": cache_file}
+            print(f"[WARN] 登录缓存文件损坏: {e}", file=sys.stderr)
+    else:
+        checks["cache"] = {"exists": False, "file": cache_file}
+        print("[INFO] 无登录缓存（需要执行 wechat-search login）", file=sys.stderr)
+
+    # 6. 网络连通性
+    try:
+        resp = requests.head("https://mp.weixin.qq.com", timeout=10)
+        net_ok = resp.status_code < 500
+        checks["network"] = {"ok": net_ok, "status_code": resp.status_code}
+        print(f"[OK] mp.weixin.qq.com 可达 (HTTP {resp.status_code})", file=sys.stderr)
+    except Exception as e:
+        checks["network"] = {"ok": False, "error": str(e)}
+        print(f"[FAIL] mp.weixin.qq.com 不可达: {e}", file=sys.stderr)
+
+    # 汇总
+    all_ok = all(c.get("ok", True) for c in checks.values())
+    _print_json({"success": all_ok, "data": checks})
+    return 0 if all_ok else 1
+
+
 def cmd_install_skill(args):
     """安装 skill 文档到 Claude Code / OpenClaw"""
     from pathlib import Path
@@ -449,6 +545,9 @@ def main():
     sp_import = subparsers.add_parser("import-login", help="导入登录凭证（从其他机器复制）")
     sp_import.add_argument("token_string", help="export-login 导出的编码字符串")
 
+    # doctor
+    subparsers.add_parser("doctor", help="环境自检（Chrome、端口、缓存、网络）")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -461,6 +560,7 @@ def main():
         "search": cmd_search,
         "scrape": cmd_scrape,
         "batch": cmd_batch,
+        "doctor": cmd_doctor,
         "install-skill": cmd_install_skill,
         "export-login": cmd_export_login,
         "import-login": cmd_import_login,

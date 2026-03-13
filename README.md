@@ -33,7 +33,15 @@ pip install ./wechat-search-skill
 ### 环境要求
 
 - Python >= 3.8
-- Chrome 浏览器（登录时需要）
+- Chrome 浏览器（登录时需要，未安装时会给出平台对应的安装提示）
+
+### 环境自检
+
+```bash
+wechat-search doctor
+```
+
+检查 Python 版本、DrissionPage、Chrome 路径、端口 9222 状态、登录缓存、网络连通性。JSON 输出到 stdout，人类可读格式输出到 stderr。
 
 ### 部署为 Claude Code Skill（可选）
 
@@ -57,6 +65,9 @@ wechat-search install-skill
 ### CLI 快速上手
 
 ```bash
+# 0. 环境自检（推荐首次使用时运行）
+wechat-search doctor
+
 # 1. 登录（首次使用，需微信扫码）
 wechat-search login
 
@@ -104,6 +115,7 @@ wechat-search status  # 验证登录成功
 
 | 命令 | 说明 |
 |------|------|
+| `doctor` | 环境自检（Chrome、端口、缓存、网络） |
 | `status` | 检查登录状态 |
 | `login` | 扫码登录微信公众平台 |
 | `search <query>` | 搜索公众号 |
@@ -209,7 +221,15 @@ pip install ./wechat-search-skill
 ### Requirements
 
 - Python >= 3.8
-- Chrome browser (required for login)
+- Chrome browser (required for login; provides platform-specific install hints if missing)
+
+### Environment Check
+
+```bash
+wechat-search doctor
+```
+
+Checks Python version, DrissionPage, Chrome path, port 9222 status, login cache, and network connectivity. JSON to stdout, human-readable to stderr.
 
 ### Deploy as Claude Code Skill (optional)
 
@@ -233,6 +253,9 @@ This tool supports two search modes:
 ### CLI Quick Start
 
 ```bash
+# 0. Environment check (recommended on first use)
+wechat-search doctor
+
 # 1. Login (first time, requires WeChat QR scan)
 wechat-search login
 
@@ -280,6 +303,7 @@ wechat-search status  # Verify login success
 
 | Command | Description |
 |---------|-------------|
+| `doctor` | Check environment (Chrome, port, cache, network) |
 | `status` | Check login status |
 | `login` | Login via WeChat QR code |
 | `search <query>` | Search official accounts |

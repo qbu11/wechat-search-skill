@@ -33,9 +33,12 @@
     - requests: HTTP 请求（用于验证 token）
 """
 
+import atexit
 import json
 import os
 import random
+import signal
+import socket
 import time
 import platform
 import tempfile
@@ -49,6 +52,77 @@ import requests
 
 from wechat_search.spider.log.utils import logger
 from wechat_search.spider.wechat.paths import get_wechat_cache_file
+
+
+def _get_platform_user_agent():
+    """根据当前操作系统返回匹配的 Chrome 120 User-Agent"""
+    system = platform.system()
+    if system == "Darwin":
+        return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    elif system == "Linux":
+        return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    else:
+        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+
+def _find_chrome_path():
+    """
+    检测 Chrome 浏览器安装路径。
+
+    Returns:
+        str | None: Chrome 可执行文件路径，未找到返回 None
+    """
+    system = platform.system()
+
+    if system == "Windows":
+        candidates = []
+        for env_var in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+            base = os.environ.get(env_var)
+            if base:
+                candidates.append(os.path.join(base, "Google", "Chrome", "Application", "chrome.exe"))
+        for path in candidates:
+            if os.path.isfile(path):
+                return path
+
+    elif system == "Darwin":
+        mac_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        if os.path.isfile(mac_path):
+            return mac_path
+
+    else:  # Linux
+        for name in ("google-chrome", "google-chrome-stable", "chromium-browser", "chromium"):
+            found = shutil.which(name)
+            if found:
+                return found
+
+    return None
+
+
+def _find_available_port(preferred=9222, range_size=10):
+    """
+    检测可用的调试端口。优先使用 preferred，被占用则尝试后续端口。
+
+    Args:
+        preferred: 首选端口号
+        range_size: 向后尝试的端口数量
+
+    Returns:
+        int: 可用端口号
+
+    Raises:
+        RuntimeError: 所有候选端口均被占用
+    """
+    for port in range(preferred, preferred + range_size):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", port))
+                return port
+        except OSError:
+            continue
+    raise RuntimeError(
+        f"端口 {preferred}-{preferred + range_size - 1} 均被占用。"
+        f"请关闭其他 Chrome 调试会话后重试，或手动指定端口。"
+    )
 
 # 缓存文件路径（存储在用户数据目录）
 CACHE_FILE = get_wechat_cache_file()
@@ -103,6 +177,7 @@ class WeChatSpiderLogin:
         self.temp_user_data_dir = None
         self.debug_port = debug_port
         self._created_browser = False  # 标记是否由本实例创建浏览器
+        self._browser_pid = None  # 浏览器进程 PID，用于定向清理
 
     def save_cache(self):
         """保存登录信息到缓存文件"""
@@ -157,7 +232,7 @@ class WeChatSpiderLogin:
         try:
             headers = {
                 "HOST": "mp.weixin.qq.com",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36"
+                "User-Agent": _get_platform_user_agent()
             }
 
             test_url = 'https://mp.weixin.qq.com/cgi-bin/searchbiz'
@@ -228,16 +303,42 @@ class WeChatSpiderLogin:
         """
         co = ChromiumOptions()
 
+        # 检测 Chrome 路径
+        chrome_path = _find_chrome_path()
+        if chrome_path:
+            co.set_browser_path(chrome_path)
+            logger.info(f"Chrome 路径: {chrome_path}")
+        else:
+            system = platform.system()
+            hints = {
+                "Windows": "winget install Google.Chrome",
+                "Darwin": "brew install --cask google-chrome",
+                "Linux": "sudo apt install google-chrome-stable  # 或 sudo dnf install google-chrome-stable",
+            }
+            hint = hints.get(system, "请从 https://www.google.com/chrome/ 下载安装")
+            logger.warning(f"未检测到 Chrome 浏览器，建议安装: {hint}")
+
         # 创建临时目录保存用户数据
         self.temp_user_data_dir = tempfile.mkdtemp()
         co.set_user_data_path(self.temp_user_data_dir)
+        # 注册 atexit 安全网，确保异常退出时也能清理
+        atexit.register(self._cleanup_temp_files)
 
-        # 设置调试端口（关键：让 MCP 可以连接）
+        # 动态检测可用端口
+        try:
+            available_port = _find_available_port(preferred=self.debug_port)
+            if available_port != self.debug_port:
+                logger.info(f"端口 {self.debug_port} 被占用，自动切换到 {available_port}")
+                self.debug_port = available_port
+        except RuntimeError as e:
+            logger.error(str(e))
+            raise
+
         co.set_local_port(self.debug_port)
         co.set_argument('--remote-allow-origins=*')
 
         # 性能优化
-        co.no_imgs(True)  # 不加载图片（可选，提升速度）
+        co.no_imgs(True)
         co.set_argument('--disable-extensions')
         co.set_argument('--disable-plugins')
         co.set_argument('--disable-software-rasterizer')
@@ -252,7 +353,7 @@ class WeChatSpiderLogin:
         co.set_argument('--disable-blink-features=AutomationControlled')
 
         # 自定义用户代理
-        co.set_user_agent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36')
+        co.set_user_agent(_get_platform_user_agent())
 
         return co
 
@@ -262,7 +363,7 @@ class WeChatSpiderLogin:
 
         优先级：
         1. 尝试接管已存在的 Chrome（通过调试端口）
-        2. 若不存在则创建新的 Chrome
+        2. 若不存在则创建新的 Chrome（含路径检测和端口检测）
 
         Returns:
             ChromiumPage: 浏览器页面对象，失败返回 None
@@ -282,46 +383,76 @@ class WeChatSpiderLogin:
         try:
             co = self._setup_chrome_options()
             page = ChromiumPage(addr_or_opts=co)
-            logger.success("成功创建新的 Chrome 浏览器")
+            # 记录浏览器 PID 用于定向清理
+            try:
+                self._browser_pid = page.process_id
+            except AttributeError:
+                try:
+                    self._browser_pid = page.browser.process_id
+                except Exception:
+                    self._browser_pid = None
+            logger.success(f"成功创建新的 Chrome 浏览器 (端口 {self.debug_port})")
             self._created_browser = True
             return page
         except Exception as e:
-            logger.error(f"创建浏览器失败: {e}")
+            err_msg = str(e).lower()
+            if "no browser" in err_msg or "connection refused" in err_msg or "not found" in err_msg:
+                logger.error(
+                    "无法启动 Chrome 浏览器。请确认已安装 Chrome，"
+                    "或运行 `wechat-search doctor` 检查环境。"
+                )
+            elif "address already in use" in err_msg:
+                logger.error(
+                    f"端口 {self.debug_port} 被占用。"
+                    "请关闭其他 Chrome 调试会话后重试。"
+                )
+            else:
+                logger.error(f"创建浏览器失败: {e}")
             return None
 
     def _cleanup_chrome_processes(self):
         """
-        清理 Chrome 进程（仅当由本实例创建时）
-
-        注意：如果有其他程序（如 MCP）正在使用浏览器，不应该强制关闭
+        清理 Chrome 进程 — 仅通过 PID 定向终止本实例创建的进程。
+        不会影响用户的其他 Chrome 窗口。
         """
         if not self._created_browser:
             logger.debug("浏览器非本实例创建，跳过进程清理")
             return
 
+        pid = getattr(self, '_browser_pid', None)
+        if not pid:
+            logger.debug("无法获取浏览器 PID，跳过进程清理（不会杀掉全部 Chrome）")
+            return
+
         try:
             system = platform.system()
             if system == "Windows":
-                subprocess.run(["taskkill", "/F", "/IM", "chrome.exe", "/T"],
-                              stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-            elif system in ("Linux", "Darwin"):
-                subprocess.run(["pkill", "-f", "chrome"],
-                              stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-            logger.debug("残留浏览器进程已清理")
+                subprocess.run(
+                    ["taskkill", "/F", "/PID", str(pid), "/T"],
+                    stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                )
+            else:
+                os.kill(pid, signal.SIGTERM)
+            logger.debug(f"浏览器进程 (PID {pid}) 已清理")
+        except (ProcessLookupError, OSError):
+            logger.debug(f"浏览器进程 (PID {pid}) 已不存在")
         except Exception as e:
-            logger.warning(f"清理Chrome进程时出现警告: {e}")
+            logger.warning(f"清理浏览器进程时出现警告: {e}")
 
     def _cleanup_temp_files(self):
-        """清理临时用户数据目录（仅当由本实例创建时）"""
+        """清理临时用户数据目录（幂等，可被 atexit 安全调用）"""
         if not self._created_browser:
             return
 
-        if self.temp_user_data_dir and os.path.exists(self.temp_user_data_dir):
+        temp_dir = self.temp_user_data_dir
+        if temp_dir and os.path.exists(temp_dir):
             try:
-                shutil.rmtree(self.temp_user_data_dir, ignore_errors=True)
+                shutil.rmtree(temp_dir, ignore_errors=True)
                 logger.debug("临时用户数据目录已清理")
             except Exception as e:
                 logger.warning(f"清理临时目录时出现警告: {e}")
+            finally:
+                self.temp_user_data_dir = None
 
     def login(self):
         """执行登录流程"""
@@ -468,7 +599,7 @@ class WeChatSpiderLogin:
             return None
         return {
             "cookie": cookie_string,
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36"
+            "user-agent": _get_platform_user_agent()
         }
 
     def is_logged_in(self):
