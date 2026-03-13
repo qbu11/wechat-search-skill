@@ -1,110 +1,148 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-微信公众平台登录模块 (DrissionPage 版本)
+微信公众平台登录模块 (agent-browser 版本)
 ==========================================
 
 实现微信公众平台的自动化登录流程，获取爬虫运行所需的认证信息。
-使用 DrissionPage 替代 Selenium，支持：
-    - 接管已打开的 Chrome 浏览器（通过 9222 端口）
-    - 创建新的 Chrome 浏览器并暴露调试端口
-    - 与 Chrome DevTools MCP 共享浏览器实例
+使用 Vercel agent-browser CLI 替代 Selenium/DrissionPage。
+
+特点:
+    - 通过 subprocess 调用 agent-browser CLI
+    - 支持 CDP 连接现有 Chrome (--cdp 9222)
+    - 可与 Chrome DevTools MCP 共享浏览器
+    - 支持 headed 模式显示浏览器窗口
 
 工作流程:
-    1. 优先接管已存在的 Chrome（9222 端口）
-    2. 若不存在则创建新的 Chrome 并暴露调试端口
+    1. 检查 agent-browser 是否已安装
+    2. 打开微信公众平台登录页面
     3. 等待用户扫码登录
-    4. 提取 token 和 cookie 并缓存
+    4. 从 URL 提取 token
+    5. 获取 cookies 并缓存
 
 缓存策略:
-    - 登录信息保存在用户数据目录，避免权限问题
-    - 默认缓存有效期 4 天（微信 token 通常 4-7 天过期）
-    - 每次使用前自动验证缓存是否仍然有效
-    - 支持手动清除缓存强制重新登录
-
-优势:
-    - 无需下载 chromedriver（版本无关）
-    - 可与 Chrome DevTools MCP 共享浏览器
-    - 性能更好，启动更快
-    - 代码更简洁
+    - 登录信息保存在用户数据目录
+    - 默认缓存有效期 4 天
+    - 支持手动清除缓存
 
 依赖:
-    - DrissionPage: 浏览器自动化
-    - requests: HTTP 请求（用于验证 token）
+    - agent-browser CLI (npm install -g agent-browser)
+    - requests: HTTP 请求
 """
 
 import json
 import os
-import random
-import time
 import platform
-import tempfile
+import random
+import re
 import shutil
 import subprocess
-import re
+import time
 from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List, Tuple
 
-from DrissionPage import ChromiumPage, ChromiumOptions
 import requests
 
 from wechat_search.spider.log.utils import logger
 from wechat_search.spider.wechat.paths import get_wechat_cache_file
 
-# 缓存文件路径（存储在用户数据目录）
+# 缓存文件路径
 CACHE_FILE = get_wechat_cache_file()
 
-# 缓存有效期：4 天（微信 token 一般 4-7 天过期）
+# 缓存有效期：4 天
 CACHE_EXPIRE_HOURS = 24 * 4
 
-# Chrome 调试端口（与 Chrome DevTools MCP 共享）
+# Chrome 调试端口
 CHROME_DEBUG_PORT = 9222
+
+# agent-browser 命令
+AGENT_BROWSER_CMD = "agent-browser"
+
+
+def check_agent_browser_installed() -> bool:
+    """检查 agent-browser 是否已安装"""
+    # Windows 上尝试 .cmd，其他系统直接用命令名
+    if platform.system() == "Windows":
+        return shutil.which(AGENT_BROWSER_CMD + ".cmd") is not None
+    return shutil.which(AGENT_BROWSER_CMD) is not None
+
+
+def get_agent_browser_cmd() -> str:
+    """获取 agent-browser 实际命令（包含 .cmd 扩展名）"""
+    if platform.system() == "Windows":
+        cmd = AGENT_BROWSER_CMD + ".cmd"
+        if shutil.which(cmd):
+            return cmd
+    return AGENT_BROWSER_CMD
+
+
+def run_agent_browser(args: List[str], capture_output: bool = True, timeout: int = 300) -> Tuple[int, str, str]:
+    """
+    运行 agent-browser 命令
+
+    Args:
+        args: 命令参数列表
+        capture_output: 是否捕获输出
+        timeout: 超时时间（秒）
+
+    Returns:
+        (return_code, stdout, stderr)
+    """
+    cmd = [get_agent_browser_cmd()] + args
+    logger.debug(f"执行命令: {' '.join(cmd)}")
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=capture_output,
+            text=True,
+            timeout=timeout,
+            encoding='utf-8',
+            errors='replace'
+        )
+        return result.returncode, result.stdout or '', result.stderr or ''
+    except subprocess.TimeoutExpired:
+        logger.error(f"命令超时: {' '.join(cmd)}")
+        return -1, '', 'Command timed out'
+    except FileNotFoundError:
+        logger.error("agent-browser 未安装，请运行: npm install -g agent-browser")
+        return -1, '', 'agent-browser not found'
+    except Exception as e:
+        logger.error(f"执行命令失败: {e}")
+        return -1, '', str(e)
 
 
 class WeChatSpiderLogin:
     """
-    微信公众平台登录管理器 (DrissionPage 版本)
+    微信公众平台登录管理器 (agent-browser 版本)
 
-    负责处理登录认证的完整生命周期，包括：
-    - 缓存的读取、验证和保存
-    - 浏览器的接管或创建（支持与 MCP 共享）
-    - 登录流程的执行和监控
-    - 资源的清理和释放
+    使用 agent-browser CLI 进行浏览器自动化操作。
 
     Attributes:
-        token: 访问令牌，用于 API 请求认证
+        token: 访问令牌
         cookies: 会话 cookie 字典
         cache_file: 缓存文件路径
-        cache_expire_hours: 缓存过期时间（小时）
-        page: DrissionPage ChromiumPage 实例
-        temp_user_data_dir: 临时用户数据目录
         debug_port: Chrome 调试端口
-
-    Example:
-        >>> login = WeChatSpiderLogin()
-        >>> if login.login():
-        ...     token = login.get_token()
-        ...     headers = login.get_headers()
-        ...     # 使用 token 和 headers 进行爬取
+        headed: 是否显示浏览器窗口
     """
 
-    def __init__(self, cache_file=CACHE_FILE, debug_port=CHROME_DEBUG_PORT):
+    def __init__(self, cache_file: str = CACHE_FILE, debug_port: int = CHROME_DEBUG_PORT, headed: bool = True):
         """
         初始化登录管理器
 
         Args:
-            cache_file: 缓存文件路径，默认使用用户数据目录下的文件
-            debug_port: Chrome 调试端口，默认 9222（与 MCP 共享）
+            cache_file: 缓存文件路径
+            debug_port: Chrome 调试端口
+            headed: 是否显示浏览器窗口（False 为 headless 模式）
         """
-        self.token = None
-        self.cookies = None
+        self.token: Optional[str] = None
+        self.cookies: Optional[Dict[str, str]] = None
         self.cache_file = cache_file
-        self.cache_expire_hours = CACHE_EXPIRE_HOURS
-        self.page = None
-        self.temp_user_data_dir = None
         self.debug_port = debug_port
-        self._created_browser = False  # 标记是否由本实例创建浏览器
+        self.headed = headed
+        self._session_active = False
 
-    def save_cache(self):
+    def save_cache(self) -> bool:
         """保存登录信息到缓存文件"""
         if self.token and self.cookies:
             cache_data = {
@@ -122,7 +160,7 @@ class WeChatSpiderLogin:
                 return False
         return False
 
-    def load_cache(self):
+    def load_cache(self) -> bool:
         """从缓存文件加载登录信息"""
         if not os.path.exists(self.cache_file):
             logger.info("缓存文件不存在，需要重新登录")
@@ -136,7 +174,7 @@ class WeChatSpiderLogin:
             current_time = datetime.now()
             hours_diff = (current_time - cache_time).total_seconds() / 3600
 
-            if hours_diff > self.cache_expire_hours:
+            if hours_diff > CACHE_EXPIRE_HOURS:
                 logger.info(f"缓存已过期（{hours_diff:.1f}小时前），需要重新登录")
                 return False
 
@@ -149,7 +187,7 @@ class WeChatSpiderLogin:
             logger.error(f"读取缓存失败: {e}，需要重新登录")
             return False
 
-    def validate_cache(self):
+    def validate_cache(self) -> bool:
         """验证缓存的登录信息是否仍然有效"""
         if not self.token or not self.cookies:
             return False
@@ -157,7 +195,7 @@ class WeChatSpiderLogin:
         try:
             headers = {
                 "HOST": "mp.weixin.qq.com",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             }
 
             test_url = 'https://mp.weixin.qq.com/cgi-bin/searchbiz'
@@ -202,7 +240,7 @@ class WeChatSpiderLogin:
             logger.error(f"验证缓存时发生错误: {e}")
             return False
 
-    def clear_cache(self):
+    def clear_cache(self) -> bool:
         """清除本地缓存文件"""
         try:
             if os.path.exists(self.cache_file):
@@ -213,122 +251,80 @@ class WeChatSpiderLogin:
             logger.error(f"清除缓存失败: {e}")
             return False
 
-    def _setup_chrome_options(self):
-        """
-        配置 Chrome 浏览器启动选项
+    def _build_base_args(self) -> List[str]:
+        """构建基础命令参数"""
+        args = []
+        if self.headed:
+            args.append("--headed")
+        # 连接到现有 Chrome 或使用新实例
+        args.extend(["--cdp", str(self.debug_port)])
+        return args
 
-        设置各种 Chrome 参数以优化爬虫场景下的表现：
-        - 使用临时用户数据目录，避免影响用户的 Chrome 配置
-        - 暴露调试端口，让 Chrome DevTools MCP 可以连接
-        - 禁用不必要的功能以提升性能
-        - 隐藏自动化特征以降低被检测风险
+    def _open_page(self, url: str) -> bool:
+        """打开页面"""
+        args = self._build_base_args() + ["open", url]
+        code, stdout, stderr = run_agent_browser(args, timeout=60)
+        if code == 0:
+            logger.success(f"页面打开成功: {url}")
+            return True
+        else:
+            logger.error(f"页面打开失败: {stderr}")
+            return False
 
-        Returns:
-            ChromiumOptions: 配置好的选项对象
-        """
-        co = ChromiumOptions()
+    def _get_current_url(self) -> Optional[str]:
+        """获取当前页面 URL"""
+        args = self._build_base_args() + ["get", "url"]
+        code, stdout, stderr = run_agent_browser(args, timeout=30)
+        if code == 0:
+            return stdout.strip()
+        return None
 
-        # 创建临时目录保存用户数据
-        self.temp_user_data_dir = tempfile.mkdtemp()
-        co.set_user_data_path(self.temp_user_data_dir)
-
-        # 设置调试端口（关键：让 MCP 可以连接）
-        co.set_local_port(self.debug_port)
-        co.set_argument('--remote-allow-origins=*')
-
-        # 性能优化
-        co.no_imgs(True)  # 不加载图片（可选，提升速度）
-        co.set_argument('--disable-extensions')
-        co.set_argument('--disable-plugins')
-        co.set_argument('--disable-software-rasterizer')
-        co.set_argument('--disable-gpu')
-        co.set_argument('--no-sandbox')
-        co.set_argument('--disable-dev-shm-usage')
-
-        # 页面缩放
-        co.set_argument('--force-device-scale-factor=0.9')
-
-        # 隐藏自动化特征
-        co.set_argument('--disable-blink-features=AutomationControlled')
-
-        # 自定义用户代理
-        co.set_user_agent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36')
-
-        return co
-
-    def _connect_to_browser(self):
-        """
-        连接到 Chrome 浏览器
-
-        优先级：
-        1. 尝试接管已存在的 Chrome（通过调试端口）
-        2. 若不存在则创建新的 Chrome
-
-        Returns:
-            ChromiumPage: 浏览器页面对象，失败返回 None
-        """
-        # 方案1: 尝试接管已存在的 Chrome
-        logger.info(f"尝试接管已存在的 Chrome (端口 {self.debug_port})...")
-        try:
-            page = ChromiumPage(addr_or_opts=f'127.0.0.1:{self.debug_port}')
-            logger.success("成功接管已存在的 Chrome 浏览器")
-            self._created_browser = False
-            return page
-        except Exception as e:
-            logger.debug(f"无法接管现有浏览器: {e}")
-
-        # 方案2: 创建新的 Chrome
-        logger.info("未找到现有浏览器，创建新的 Chrome 实例...")
-        try:
-            co = self._setup_chrome_options()
-            page = ChromiumPage(addr_or_opts=co)
-            logger.success("成功创建新的 Chrome 浏览器")
-            self._created_browser = True
-            return page
-        except Exception as e:
-            logger.error(f"创建浏览器失败: {e}")
-            return None
-
-    def _cleanup_chrome_processes(self):
-        """
-        清理 Chrome 进程（仅当由本实例创建时）
-
-        注意：如果有其他程序（如 MCP）正在使用浏览器，不应该强制关闭
-        """
-        if not self._created_browser:
-            logger.debug("浏览器非本实例创建，跳过进程清理")
-            return
-
-        try:
-            system = platform.system()
-            if system == "Windows":
-                subprocess.run(["taskkill", "/F", "/IM", "chrome.exe", "/T"],
-                              stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-            elif system in ("Linux", "Darwin"):
-                subprocess.run(["pkill", "-f", "chrome"],
-                              stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-            logger.debug("残留浏览器进程已清理")
-        except Exception as e:
-            logger.warning(f"清理Chrome进程时出现警告: {e}")
-
-    def _cleanup_temp_files(self):
-        """清理临时用户数据目录（仅当由本实例创建时）"""
-        if not self._created_browser:
-            return
-
-        if self.temp_user_data_dir and os.path.exists(self.temp_user_data_dir):
+    def _get_cookies(self) -> Optional[Dict[str, str]]:
+        """获取当前页面 cookies"""
+        args = self._build_base_args() + ["cookies", "get"]
+        code, stdout, stderr = run_agent_browser(args, timeout=30)
+        if code == 0:
             try:
-                shutil.rmtree(self.temp_user_data_dir, ignore_errors=True)
-                logger.debug("临时用户数据目录已清理")
-            except Exception as e:
-                logger.warning(f"清理临时目录时出现警告: {e}")
+                # agent-browser 返回 JSON 格式的 cookies
+                cookies_list = json.loads(stdout)
+                return {c['name']: c['value'] for c in cookies_list if 'name' in c and 'value' in c}
+            except json.JSONDecodeError:
+                logger.warning("解析 cookies 失败")
+        return None
 
-    def login(self):
-        """执行登录流程"""
+    def _take_snapshot(self) -> Optional[str]:
+        """获取页面快照"""
+        args = self._build_base_args() + ["snapshot"]
+        code, stdout, stderr = run_agent_browser(args, timeout=30)
+        if code == 0:
+            return stdout
+        return None
+
+    def _close_browser(self) -> bool:
+        """关闭浏览器"""
+        args = self._build_base_args() + ["close"]
+        code, stdout, stderr = run_agent_browser(args, timeout=30)
+        return code == 0
+
+    def login(self) -> bool:
+        """
+        执行登录流程
+
+        Returns:
+            bool: 登录成功返回 True
+        """
         logger.info("\n" + "="*60)
         logger.info("开始登录微信公众号平台...")
         logger.info("="*60)
 
+        # 检查 agent-browser 是否安装
+        if not check_agent_browser_installed():
+            logger.error("agent-browser 未安装")
+            logger.info("请运行: npm install -g agent-browser")
+            logger.info("然后运行: agent-browser install")
+            return False
+
+        # 检查缓存
         if self.load_cache() and self.validate_cache():
             logger.success("使用有效的缓存登录信息")
             return True
@@ -336,38 +332,31 @@ class WeChatSpiderLogin:
             logger.info("缓存无效或不存在，需要重新扫码登录")
             self.clear_cache()
 
-        # 不再强制清理进程，因为可能正在与其他程序共享
-        # self._cleanup_chrome_processes()
-
         try:
-            logger.info("正在连接/启动 Chrome 浏览器...")
-
-            self.page = self._connect_to_browser()
-            if not self.page:
-                logger.error("浏览器连接/启动失败")
+            # 打开登录页面
+            logger.info("正在打开微信公众平台...")
+            if not self._open_page('https://mp.weixin.qq.com/'):
                 return False
-
-            logger.info("正在访问微信公众号平台...")
-            self.page.get('https://mp.weixin.qq.com/')
-            logger.success("页面加载完成")
 
             logger.info("请在浏览器窗口中扫码登录...")
             logger.info("等待登录完成（最长等待5分钟）...")
 
-            # 等待 URL 包含 token
+            # 等待登录成功（URL 包含 token）
             start_time = time.time()
             timeout = 300  # 5 分钟
+            current_url = None
 
             while time.time() - start_time < timeout:
-                current_url = self.page.url
-                if 'token=' in current_url:
+                current_url = self._get_current_url()
+                if current_url and 'token=' in current_url:
                     logger.success("检测到登录成功！正在获取登录信息...")
                     break
-                time.sleep(1)
+                time.sleep(2)
             else:
                 logger.error("登录超时（5分钟内未检测到登录成功）")
                 return False
 
+            # 提取 token
             token_match = re.search(r'token=(\d+)', current_url)
             if token_match:
                 self.token = token_match.group(1)
@@ -377,10 +366,14 @@ class WeChatSpiderLogin:
                 return False
 
             # 获取 cookies
-            raw_cookies = self.page.cookies(as_dict=True)
-            self.cookies = raw_cookies
-            logger.success(f"Cookies获取成功，共{len(self.cookies)}个")
+            self.cookies = self._get_cookies()
+            if self.cookies:
+                logger.success(f"Cookies获取成功，共{len(self.cookies)}个")
+            else:
+                logger.error("获取 Cookies 失败")
+                return False
 
+            # 保存缓存
             if self.save_cache():
                 logger.success("登录信息已保存到缓存")
 
@@ -391,26 +384,14 @@ class WeChatSpiderLogin:
             logger.error(f"登录过程中出现错误: {e}")
             return False
 
-        finally:
-            # 关闭浏览器（仅当由本实例创建时）
-            if self.page and self._created_browser:
-                try:
-                    self.page.quit()
-                    logger.debug("浏览器已关闭")
-                except:
-                    pass
-
-            self._cleanup_chrome_processes()
-            self._cleanup_temp_files()
-
-    def check_login_status(self):
+    def check_login_status(self) -> Dict[str, Any]:
         """获取当前登录状态的详细信息"""
         if self.load_cache() and self.validate_cache():
             try:
                 with open(self.cache_file, 'r', encoding='utf-8') as f:
                     cache_data = json.load(f)
                 cache_time = datetime.fromtimestamp(cache_data['timestamp'])
-                expire_time = cache_time + timedelta(hours=self.cache_expire_hours)
+                expire_time = cache_time + timedelta(hours=CACHE_EXPIRE_HOURS)
                 hours_since_login = (datetime.now() - cache_time).total_seconds() / 3600
                 hours_until_expire = (expire_time - datetime.now()).total_seconds() / 3600
 
@@ -423,7 +404,7 @@ class WeChatSpiderLogin:
                     'token': self.token,
                     'message': f'已登录 {round(hours_since_login, 1)} 小时'
                 }
-            except:
+            except Exception:
                 pass
 
         return {
@@ -431,37 +412,35 @@ class WeChatSpiderLogin:
             'message': '未登录或登录已过期'
         }
 
-    def logout(self):
+    def logout(self) -> bool:
         """退出登录并清理所有相关资源"""
         logger.info("正在退出登录...")
         self.clear_cache()
         self.token = None
         self.cookies = None
-        self._cleanup_chrome_processes()
-        self._cleanup_temp_files()
         logger.success("退出登录完成")
         return True
 
-    def get_token(self):
+    def get_token(self) -> Optional[str]:
         """获取访问令牌"""
         if not self.token and not (self.load_cache() and self.validate_cache()):
             return None
         return self.token
 
-    def get_cookies(self):
+    def get_cookies(self) -> Optional[Dict[str, str]]:
         """获取 cookie 字典"""
         if not self.cookies and not (self.load_cache() and self.validate_cache()):
             return None
         return self.cookies
 
-    def get_cookie_string(self):
+    def get_cookie_string(self) -> Optional[str]:
         """获取 HTTP 请求头格式的 cookie 字符串"""
         cookies = self.get_cookies()
         if not cookies:
             return None
         return '; '.join([f"{key}={value}" for key, value in cookies.items()])
 
-    def get_headers(self):
+    def get_headers(self) -> Optional[Dict[str, str]]:
         """获取完整的 HTTP 请求头"""
         cookie_string = self.get_cookie_string()
         if not cookie_string:
@@ -471,12 +450,12 @@ class WeChatSpiderLogin:
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36"
         }
 
-    def is_logged_in(self):
+    def is_logged_in(self) -> bool:
         """快速检查是否处于登录状态"""
         return self.check_login_status()['isLoggedIn']
 
 
-def quick_login():
+def quick_login() -> Tuple[Optional[str], Optional[Dict], Optional[Dict]]:
     """快速登录便捷函数"""
     login_manager = WeChatSpiderLogin()
     if login_manager.login():
@@ -488,7 +467,7 @@ def quick_login():
     return (None, None, None)
 
 
-def check_login():
+def check_login() -> Dict[str, Any]:
     """检查登录状态便捷函数"""
     login_manager = WeChatSpiderLogin()
     return login_manager.check_login_status()
