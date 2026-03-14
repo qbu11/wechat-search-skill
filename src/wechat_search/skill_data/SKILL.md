@@ -4,7 +4,7 @@
 
 ## 触发词
 
-wechat-search, 微信公众号搜索, 公众号检索, 微信文章搜索
+wechat-search, 微信公众号搜索, 公众号检索, 微信文章搜索, 微信关键词搜索, keyword-search
 
 ## 安装
 
@@ -117,7 +117,50 @@ wechat-search import-login "导出的凭证字符串"
 
 ---
 
-## 场景 B：按文章关键词搜索
+## 场景 B：按文章关键词搜索（CLI 方式，推荐）
+
+用户提供文章主题关键词，跨公众号搜索相关文章。使用 `keyword-search` 子命令，基于搜狗微信搜索，**无需微信登录**。
+
+### 快速使用
+
+```bash
+# 搜索关键词，获取文章列表（不含正文）
+wechat-search keyword-search "AI大模型" --pages 3 --no-content
+
+# 搜索并获取正文，输出 CSV
+wechat-search keyword-search "AI大模型" --pages 3 --days 7 -o result.csv
+
+# 搜索并获取正文，输出 Markdown
+wechat-search keyword-search "AI大模型" --pages 3 --days 7 --format md -o result.md
+
+# 显示浏览器窗口（调试用）
+wechat-search keyword-search "AI大模型" --no-headless
+```
+
+### 参数说明
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `keyword` | (必填) | 搜索关键词 |
+| `--pages N` | 3 | 搜狗搜索页数（每页约 10 篇） |
+| `--days N` | 不限 | 时间范围（最近 N 天） |
+| `--no-content` | 获取正文 | 不获取文章正文 |
+| `--format csv\|md` | csv | 输出格式 |
+| `--output FILE` | 自动生成 | 输出文件路径 |
+| `--no-headless` | 无头模式 | 显示浏览器窗口 |
+| `--strategy auto\|requests\|browser` | auto | 正文获取策略 |
+
+### 工作流程
+
+1. DrissionPage 打开搜狗微信搜索，输入关键词
+2. 解析搜索结果，提取文章标题、公众号、时间、摘要
+3. 通过浏览器跟随搜狗跳转链接，获取 mp.weixin.qq.com 真实 URL
+4. 多策略获取正文（auto: 先 requests，失败则用浏览器渲染）
+5. 输出 CSV 或 Markdown
+
+---
+
+## 场景 B（备选）：按文章关键词搜索（Chrome DevTools MCP 方式）
 
 用户提供的是**文章主题关键词**，需要跨公众号搜索相关文章。使用**搜狗微信搜索**。
 

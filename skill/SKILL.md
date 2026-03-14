@@ -1,10 +1,10 @@
 # 微信公众号检索
 
-微信公众号文章搜索与爬取工具。通过微信公众平台 API 检索公众号和文章。
+微信公众号文章搜索与爬取工具。通过微信公众平台 API 检索公众号和文章，或通过搜狗微信搜索按关键词搜索文章。
 
 ## 触发词
 
-wechat-search, 微信公众号搜索, 公众号检索, 微信文章搜索
+wechat-search, 微信公众号搜索, 公众号检索, 微信文章搜索, 微信关键词搜索, keyword-search
 
 ## 安装
 
@@ -133,3 +133,26 @@ wechat-search scrape "某公众号" --pages 10 --days 90 --content --output resu
 ```bash
 wechat-search batch "公众号A,公众号B,公众号C" --pages 5 --days 30 --content
 ```
+
+### 场景D: 按关键词搜索文章（跨公众号，无需登录）
+
+```bash
+# 搜索关键词，获取文章列表（不含正文）
+wechat-search keyword-search "AI大模型" --pages 3 --no-content
+
+# 搜索并获取正文，输出 CSV
+wechat-search keyword-search "AI大模型" --pages 3 --days 7 -o result.csv
+
+# 搜索并获取正文，输出 Markdown
+wechat-search keyword-search "AI大模型" --pages 3 --days 7 --format md -o result.md
+```
+
+参数说明:
+- `keyword`: 搜索关键词
+- `--pages N`: 搜狗搜索页数（默认3，每页约10篇）
+- `--days N`: 时间范围（最近N天，默认不限）
+- `--no-content`: 不获取文章正文（默认获取）
+- `--format csv|md`: 输出格式（默认 csv）
+- `--output FILE`: 输出文件路径（默认自动生成）
+- `--no-headless`: 显示浏览器窗口（调试用）
+- `--strategy auto|requests|browser`: 正文获取策略（默认 auto）

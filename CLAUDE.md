@@ -11,7 +11,7 @@ wechat-search-skill/
 ├── VERSIONS.md                        # 多版本管理（DrissionPage / agent-browser / Selenium）
 ├── wechat-article-search-workflow.md  # 场景 B 搜狗搜索工作流参考文档
 ├── src/wechat_search/
-│   ├── cli.py                         # CLI 入口，所有子命令定义（含 doctor）
+│   ├── cli.py                         # CLI 入口，所有子命令定义（含 doctor, keyword-search）
 │   ├── skill_data/SKILL.md            # Skill 文档（随 pip 包分发）
 │   └── spider/
 │       ├── log/utils.py               # loguru 日志（stderr 输出，自动初始化）
@@ -21,7 +21,11 @@ wechat-search-skill/
 │           ├── utils.py               # 微信公众平台 API 请求 + HTML→Markdown
 │           ├── paths.py               # 跨平台路径管理（缓存目录、输出目录）
 │           ├── cache_codec.py         # 凭证导入导出（zlib + CRC32 + Base64）
-│           └── async_utils.py         # 异步批量爬取（aiohttp + Semaphore）
+│           ├── async_utils.py         # 异步批量爬取（aiohttp + Semaphore）
+│           ├── sogou_search.py        # 搜狗微信关键词搜索（DrissionPage）
+│           ├── url_resolver.py        # 搜狗链接→mp.weixin.qq.com 转换
+│           ├── content_fetcher.py     # 多策略正文获取（requests/browser/camoufox）
+│           └── formatters.py          # 输出格式化（CSV/Markdown）
 └── skill/                             # 旧版 skill 目录（已迁移到 skill_data）
 ```
 
@@ -72,6 +76,17 @@ CLI (cli.py)
  └─ wechat-search batch ───→ BatchWeChatScraper.start_batch_scrape()
                                 ├─ 顺序模式: 逐个公众号处理
                                 └─ 多线程模式: ThreadPoolExecutor
+
+ └─ wechat-search keyword-search ─→ 搜狗微信关键词搜索（无需登录）
+                                       ├─ SogouWeChatSearch.search()
+                                       │   └─ DrissionPage → weixin.sogou.com
+                                       ├─ SogouUrlResolver.batch_resolve()
+                                       │   └─ 浏览器跟随跳转 → mp.weixin.qq.com
+                                       ├─ ArticleContentFetcher.fetch_batch()
+                                       │   ├─ 策略1: requests + BeautifulSoup (复用 utils)
+                                       │   ├─ 策略2: DrissionPage 浏览器渲染
+                                       │   └─ 策略3: Camoufox (可选)
+                                       └─ formatters.save_articles_to_csv/md()
 ```
 
 ### 模块依赖关系
@@ -80,10 +95,24 @@ CLI (cli.py)
 cli.py ─────────┬─→ login.py (WeChatSpiderLogin)
                 ├─→ scraper.py (WeChatScraper, BatchWeChatScraper)
                 ├─→ cache_codec.py (encode/decode)
-                └─→ paths.py (get_wechat_cache_file, get_default_output_dir)
+                ├─→ paths.py (get_wechat_cache_file, get_default_output_dir)
+                ├─→ sogou_search.py (SogouWeChatSearch) [keyword-search]
+                ├─→ url_resolver.py (SogouUrlResolver) [keyword-search]
+                ├─→ content_fetcher.py (ArticleContentFetcher) [keyword-search]
+                └─→ formatters.py (save_articles_to_csv/md) [keyword-search]
 
 scraper.py ─────┬─→ utils.py (get_fakid, get_articles_list, get_article_content)
                 └─→ log/utils.py (logger)
+
+sogou_search.py ┬─→ DrissionPage (ChromiumPage, ChromiumOptions)
+                └─→ log/utils.py (logger)
+
+url_resolver.py ┬─→ DrissionPage (复用实例)
+                └─→ log/utils.py (logger)
+
+content_fetcher.py ┬─→ utils.py (get_article_content, md, _preprocess_lazy_images)
+                   ├─→ DrissionPage (browser 策略)
+                   └─→ log/utils.py (logger)
 
 login.py ───────┬─→ DrissionPage (ChromiumPage, ChromiumOptions)
                 ├─→ paths.py (缓存路径)
@@ -164,6 +193,8 @@ wechat-search login                     # 扫码登录（弹出 Chrome）
 wechat-search search "关键词"            # 搜索公众号
 wechat-search scrape "公众号" --pages 5 --days 30 --content --output result.csv
 wechat-search batch "号1,号2" --pages 3 --days 7 --content --output-dir ./out
+wechat-search keyword-search "AI大模型" --pages 3 --days 7 -o result.csv  # 关键词搜索（无需登录）
+wechat-search keyword-search "AI大模型" --pages 3 --format md -o result.md  # Markdown 输出
 wechat-search export-login              # 导出凭证字符串
 wechat-search import-login "凭证字符串"  # 导入凭证
 wechat-search install-skill             # 部署 SKILL.md 到 ~/.claude/skills/
@@ -175,7 +206,13 @@ wechat-search install-skill             # 部署 SKILL.md 到 ~/.claude/skills/
 
 `wechat-search search/scrape/batch`，依赖微信公众平台 API + 登录态。
 
-### 场景 B：按文章关键词（Chrome DevTools MCP + 搜狗）
+### 场景 B：按文章关键词（CLI keyword-search，推荐）
+
+`wechat-search keyword-search`，基于搜狗微信搜索 + DrissionPage，**无需微信登录**。
+
+工作流：搜狗搜索 → 链接转换 → 多策略正文获取 → CSV/Markdown 输出。
+
+### 场景 B（备选）：按文章关键词（Chrome DevTools MCP + 搜狗）
 
 通过 `weixin.sogou.com` 搜索文章，用 Chrome DevTools MCP 提取列表和正文。
 

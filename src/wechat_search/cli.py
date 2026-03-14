@@ -7,17 +7,19 @@
 无 GUI 依赖的命令行接口，供 Claude Code / OpenClaw 等工具调用。
 
 子命令:
-    status   - 检查登录状态
-    login    - 扫码登录（需要 Chrome 浏览器）
-    search   - 搜索公众号
-    scrape   - 爬取单个公众号文章
-    batch    - 批量爬取多个公众号
+    status          - 检查登录状态
+    login           - 扫码登录（需要 Chrome 浏览器）
+    search          - 搜索公众号
+    scrape          - 爬取单个公众号文章
+    batch           - 批量爬取多个公众号
+    keyword-search  - 按关键词搜索文章（搜狗微信，无需登录）
 
 用法:
     wechat-search status
     wechat-search search "人民日报"
     wechat-search scrape "人民日报" --pages 5 --days 30
     wechat-search batch "人民日报,新华社" --pages 3 --days 7
+    wechat-search keyword-search "AI大模型" --pages 3 --days 7
 """
 
 import argparse
@@ -383,6 +385,97 @@ def cmd_doctor(args):
     return 0 if all_ok else 1
 
 
+def cmd_keyword_search(args):
+    """按关键词搜索微信文章（搜狗微信搜索，无需登录）"""
+    from wechat_search.spider.log.utils import logger
+    from wechat_search.spider.wechat.sogou_search import SogouWeChatSearch
+    from wechat_search.spider.wechat.url_resolver import SogouUrlResolver
+    from wechat_search.spider.wechat.content_fetcher import ArticleContentFetcher
+    from wechat_search.spider.wechat.formatters import save_articles_to_csv, save_articles_to_md
+
+    headless = not args.no_headless
+    include_content = not args.no_content
+
+    logger.info(f"关键词搜索: {args.keyword} (页数={args.pages}, 天数={args.days}, 正文={include_content})")
+
+    # Step 1: 搜狗搜索
+    searcher = SogouWeChatSearch(headless=headless)
+    try:
+        articles = searcher.search(args.keyword, max_pages=args.pages, days=args.days)
+    finally:
+        # 获取浏览器实例供后续复用，然后不关闭
+        browser_page = searcher._page
+        searcher._owns_page = False  # 防止 close 时关闭
+
+    if not articles:
+        _print_json({"success": False, "error": "未找到相关文章"})
+        return 1
+
+    logger.info(f"搜索到 {len(articles)} 篇文章，开始转换链接...")
+
+    # Step 2: 链接转换（复用浏览器实例）
+    resolver = SogouUrlResolver(page=browser_page)
+    try:
+        articles = resolver.batch_resolve(articles)
+    finally:
+        pass  # 不关闭，后续 content_fetcher 可能还要用
+
+    # Step 3: 获取正文（可选）
+    if include_content:
+        fetcher = ArticleContentFetcher(strategy=args.strategy, page=browser_page)
+        try:
+            articles = fetcher.fetch_batch(articles, delay=3)
+        finally:
+            fetcher._owns_page = False
+
+    # 关闭浏览器
+    if browser_page is not None:
+        try:
+            browser_page.quit()
+        except Exception:
+            pass
+
+    # Step 4: 输出
+    output_file = args.output
+    if not output_file:
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        ext = 'md' if args.format == 'md' else 'csv'
+        output_file = f"keyword_search_{ts}.{ext}"
+
+    if args.format == 'md':
+        save_articles_to_md(articles, output_file)
+    else:
+        save_articles_to_csv(articles, output_file)
+
+    # 构建 JSON 输出
+    articles_output = []
+    for a in articles:
+        item = {
+            "title": a.get("title", ""),
+            "account": a.get("account", ""),
+            "date": a.get("date", ""),
+            "link": a.get("link", ""),
+        }
+        if include_content:
+            content = a.get("content", "")
+            item["content"] = content[:2000] + "..." if len(content) > 2000 else content
+        else:
+            item["summary"] = a.get("summary", "")
+        articles_output.append(item)
+
+    _print_json({
+        "success": True,
+        "data": {
+            "keyword": args.keyword,
+            "total": len(articles_output),
+            "output_file": os.path.abspath(output_file),
+            "format": args.format,
+            "articles": articles_output
+        }
+    })
+    return 0
+
+
 def cmd_install_skill(args):
     """安装 skill 文档到 Claude Code / OpenClaw"""
     from pathlib import Path
@@ -545,6 +638,17 @@ def main():
     sp_import = subparsers.add_parser("import-login", help="导入登录凭证（从其他机器复制）")
     sp_import.add_argument("token_string", help="export-login 导出的编码字符串")
 
+    # keyword-search
+    sp_kw = subparsers.add_parser("keyword-search", help="按关键词搜索微信文章（搜狗微信，无需登录）")
+    sp_kw.add_argument("keyword", help="搜索关键词")
+    sp_kw.add_argument("--pages", type=int, default=3, help="搜狗搜索页数（默认3，每页约10篇）")
+    sp_kw.add_argument("--days", type=int, default=None, help="时间范围（最近N天，默认不限）")
+    sp_kw.add_argument("--no-content", action="store_true", help="不获取文章正文（默认获取）")
+    sp_kw.add_argument("--format", choices=["csv", "md"], default="csv", help="输出格式（默认 csv）")
+    sp_kw.add_argument("--output", "-o", default=None, help="输出文件路径（默认自动生成）")
+    sp_kw.add_argument("--no-headless", action="store_true", help="显示浏览器窗口（默认无头模式）")
+    sp_kw.add_argument("--strategy", choices=["auto", "requests", "browser"], default="auto", help="正文获取策略（默认 auto）")
+
     # doctor
     subparsers.add_parser("doctor", help="环境自检（Chrome、端口、缓存、网络）")
 
@@ -560,6 +664,7 @@ def main():
         "search": cmd_search,
         "scrape": cmd_scrape,
         "batch": cmd_batch,
+        "keyword-search": cmd_keyword_search,
         "doctor": cmd_doctor,
         "install-skill": cmd_install_skill,
         "export-login": cmd_export_login,
