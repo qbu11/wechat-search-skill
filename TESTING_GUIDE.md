@@ -7,10 +7,27 @@
 ```bash
 cd ~/projects  # 或你的工作目录
 git clone -b drissionpage https://github.com/qbu11/wechat-search-skill.git wechat-search-skill-dev
+```
+
+### macOS / Linux（Homebrew Python 需要 venv）
+
+```bash
+cd wechat-search-skill-dev
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+之后每次使用前需要先 `source .venv/bin/activate`，或者直接用 `.venv/bin/wechat-search`。
+
+### Windows
+
+```bash
 pip install -e ./wechat-search-skill-dev
 ```
 
-验证安装：
+### 验证安装
+
 ```bash
 wechat-search doctor
 wechat-search keyword-search --help
@@ -82,11 +99,14 @@ wechat-search keyword-search "人工智能" --pages 1 --days 7 --strategy browse
 帮我在本机安装 wechat-search-skill 的 drissionpage 分支，然后运行 doctor 自检。
 
 步骤：
-1. git clone -b drissionpage https://github.com/qbu11/wechat-search-skill.git wechat-search-skill-dev
-2. pip install -e ./wechat-search-skill-dev
-3. wechat-search doctor
-4. wechat-search keyword-search --help
+1. git clone -b drissionpage https://github.com/qbu11/wechat-search-skill.git ~/wechat-search-skill-dev
+2. cd ~/wechat-search-skill-dev
+3. python3 -m venv .venv && source .venv/bin/activate  （macOS/Linux 必须用 venv，Windows 可跳过）
+4. pip install -e .
+5. wechat-search doctor
+6. wechat-search keyword-search --help
 
+如果遇到 "externally-managed-environment" 错误，说明必须用 venv。
 确认所有命令正常运行。
 ```
 
