@@ -17,15 +17,20 @@ description: Use this skill when the user wants to search WeChat Official Accoun
 
 ## 用法
 
-```bash
-# 搜索不含正文（最快）
-python scripts/keyword_search.py "关键词" --pages 3 --no-content
+默认获取正文（不要加 --no-content，除非用户明确要求只看标题/摘要）。
 
-# 搜索含正文，CSV 输出
+```bash
+# 默认用法：搜索含正文，CSV 输出（推荐）
+python scripts/keyword_search.py "关键词" --pages 3 -o result.csv
+
+# 限定时间范围
 python scripts/keyword_search.py "关键词" --pages 3 --days 7 -o result.csv
 
 # Markdown 输出
-python scripts/keyword_search.py "关键词" --pages 3 --days 7 --format md -o result.md
+python scripts/keyword_search.py "关键词" --pages 3 --format md -o result.md
+
+# 仅标题摘要，不爬正文（用户明确要求时才用）
+python scripts/keyword_search.py "关键词" --pages 3 --no-content
 
 # 显示浏览器（调试/验证码）
 python scripts/keyword_search.py "关键词" --no-headless
