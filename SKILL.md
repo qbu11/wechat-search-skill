@@ -1,6 +1,6 @@
 ---
 name: wechat-search
-description: Use this skill when the user wants to search WeChat Official Account articles by keyword. This includes searching for articles on weixin.sogou.com, extracting article lists, resolving sogou redirect links to real mp.weixin.qq.com URLs, fetching full article content, and exporting results as CSV or Markdown. Trigger on: 微信文章搜索, 微信关键词搜索, wechat article search, keyword-search, 搜索公众号文章.
+description: Use this skill when the user wants to search WeChat Official Account articles by keyword OR read a specific WeChat article URL (mp.weixin.qq.com). Includes keyword search via sogou, URL resolution, full article content fetching, and CSV/Markdown export. Trigger on: 微信文章搜索, 微信关键词搜索, wechat article search, keyword-search, 搜索公众号文章, 读取微信文章, mp.weixin.qq.com URL.
 ---
 
 # 微信公众号关键词搜索
@@ -60,6 +60,25 @@ python scripts/keyword_search.py "关键词" --no-headless
 ## 输出格式
 
 JSON 到 stdout，日志到 stderr。返回 `{"success": bool, "data": {...}}`。
+
+
+## 直接读取微信文章 URL
+
+当用户提供 `mp.weixin.qq.com` 链接时，直接用 Python 调用 `ArticleContentFetcher` 获取正文：
+
+```python
+import sys
+sys.path.insert(0, r'C:\Users\puzzl\.claude\skills\wechat-search\scripts')
+from content_fetcher import ArticleContentFetcher
+
+fetcher = ArticleContentFetcher(strategy="auto")
+result = fetcher.fetch("https://mp.weixin.qq.com/s/xxxx")
+# result: {title, content_md, images, author, publish_time}
+print(result['title'])
+print(result['content_md'])
+```
+
+策略优先级：`auto`（先 requests，失败则 browser）> `requests` > `browser`
 
 ## 注意事项
 
