@@ -1,70 +1,64 @@
-# wechat-search-skill
+# 微信公众号文章搜索 & 读取
 
-Claude Code Skill：微信公众号文章搜索 + URL 直读。
+Claude Code 插件，让 AI 助手能搜索和读取微信公众号文章。
 
-基于搜狗微信搜索 + DrissionPage，无需微信登录。支持两种场景：
-1. **关键词搜索** — 按关键词批量搜索微信文章
-2. **URL 直读** — 直接读取 `mp.weixin.qq.com` 文章全文
+## 能做什么
+
+- **搜索文章**：输入关键词，自动搜索微信公众号文章并提取全文
+- **读取链接**：发送微信文章链接，自动获取标题和正文内容
+
+无需微信登录，开箱即用。
 
 ## 安装
 
 ```bash
+# 1. 下载插件
 git clone https://github.com/qbu11/wechat-search-skill.git ~/.claude/skills/wechat-search
+
+# 2. 安装依赖
 cd ~/.claude/skills/wechat-search
 pip install -r scripts/requirements.txt
+
+# 3. 安装防误用钩子（可选，推荐）
+cp hooks/block-webfetch-wechat.js ~/.claude/hooks/
+
+# 4. 安装默认规则（可选，推荐）
+cp docs/wechat-reading.md ~/.claude/rules/
 ```
 
-新开 Claude Code 会话后，发送微信链接或输入"微信文章搜索"即可自动触发。
+安装完成后重启 Claude Code 即可使用。
 
-## 功能一：关键词搜索
+## 怎么用
+
+### 读取一篇文章
+
+直接把微信文章链接发给 Claude：
+
+> https://mp.weixin.qq.com/s/xxxxx
+
+Claude 会自动读取并返回文章全文。
+
+### 搜索文章
+
+对 Claude 说：
+
+> 帮我搜索"AI大模型"相关的微信文章
+
+或者直接运行命令：
 
 ```bash
 python scripts/keyword_search.py "AI大模型" --pages 3 -o result.csv
-python scripts/keyword_search.py "AI大模型" --pages 3 --days 7 --format md -o result.md
-python scripts/keyword_search.py "AI大模型" --no-headless  # 显示浏览器（验证码）
 ```
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `keyword` | (必填) | 搜索关键词 |
-| `--pages N` | 3 | 搜索页数（每页约10篇） |
-| `--days N` | 不限 | 时间范围 |
-| `--no-content` | 获取正文 | 不获取正文 |
-| `--format csv\|md` | csv | 输出格式 |
-| `--output FILE` | 自动 | 输出文件 |
-| `--strategy auto\|requests\|browser` | auto | 正文获取策略 |
+## 为什么需要钩子和规则
 
-## 功能二：直接读取微信文章 URL
+微信文章有反爬机制，Claude 默认的网页读取工具（WebFetch）会被拦截。
 
-当用户发送 `mp.weixin.qq.com` 链接时，Claude 自动调用 `ArticleContentFetcher` 读取全文：
+安装钩子后，Claude 遇到微信链接会**自动切换**到本插件的专用读取器，无需手动提醒。
 
-```python
-import sys
-sys.path.insert(0, r'~/.claude/skills/wechat-search/scripts')
-from content_fetcher import ArticleContentFetcher
+### 钩子配置
 
-fetcher = ArticleContentFetcher(strategy="auto")
-result = fetcher.fetch("https://mp.weixin.qq.com/s/xxxxx")
-# result: {title, content_md, images, author, publish_time}
-```
-
-| 策略 | 说明 |
-|------|------|
-| `auto`（默认） | 先 requests，失败则 browser |
-| `requests` | 纯 HTTP，最快 |
-| `browser` | DrissionPage 渲染 |
-
-## 自动化配置（Hook + Rule）
-
-WebFetch 访问微信文章会被验证码拦截。通过以下配置让 Claude 自动使用本 skill：
-
-### 1. 安装 Hook — 拦截 WebFetch
-
-```bash
-cp hooks/block-webfetch-wechat.js ~/.claude/hooks/
-```
-
-在 `~/.claude/settings.json` 添加：
+安装钩子文件后，还需在 `~/.claude/settings.json` 中添加以下配置：
 
 ```json
 {
@@ -85,57 +79,45 @@ cp hooks/block-webfetch-wechat.js ~/.claude/hooks/
 }
 ```
 
-### 2. 安装 Rule — 设置默认读取方式
+如果 `settings.json` 中已有其他 `hooks` 配置，把上面的内容合并进去即可。
 
-```bash
-cp docs/wechat-reading.md ~/.claude/rules/
-```
-
-### 一键安装
-
-```bash
-git clone https://github.com/qbu11/wechat-search-skill.git ~/.claude/skills/wechat-search
-cd ~/.claude/skills/wechat-search
-pip install -r scripts/requirements.txt
-cp hooks/block-webfetch-wechat.js ~/.claude/hooks/
-cp docs/wechat-reading.md ~/.claude/rules/
-# 手动将 hook JSON 配置加入 ~/.claude/settings.json
-```
-
-## 项目结构
+## 文件说明
 
 ```
-wechat-search-skill/
-├── SKILL.md                           # Claude Code Skill 定义
-├── README.md
-├── LICENSE.txt
+├── SKILL.md                        # 插件定义（Claude Code 自动识别）
 ├── hooks/
-│   └── block-webfetch-wechat.js       # PreToolUse Hook
+│   └── block-webfetch-wechat.js    # 钩子：拦截 WebFetch 访问微信
 ├── docs/
-│   └── wechat-reading.md             # 全局 Rule 模板
+│   └── wechat-reading.md           # 规则：告诉 Claude 用本插件读微信
 └── scripts/
-    ├── requirements.txt
-    ├── keyword_search.py              # CLI 主入口
-    ├── sogou_search.py                # 搜狗搜索
-    ├── url_resolver.py                # 链接转换
-    ├── content_fetcher.py             # 多策略正文获取
-    ├── article_utils.py               # HTML→Markdown
-    └── formatters.py                  # CSV/MD 输出
+    ├── requirements.txt            # Python 依赖
+    ├── keyword_search.py           # 关键词搜索（命令行工具）
+    ├── content_fetcher.py          # 文章正文获取（核心）
+    ├── sogou_search.py             # 搜狗微信搜索
+    ├── url_resolver.py             # 链接解析
+    ├── article_utils.py            # HTML 转 Markdown
+    └── formatters.py               # 输出格式化
 ```
 
-## 触发词
+## 环境要求
 
-- `微信文章搜索` / `微信关键词搜索` / `搜索公众号文章`
-- `读取微信文章`
-- 直接发送 `mp.weixin.qq.com` 链接
-- `wechat article search` / `keyword-search`
+- Python 3.8+
+- Chrome 浏览器
 
-## 注意事项
+## 常见问题
 
-- 搜狗验证码时加 `--no-headless`
-- 请求间隔 >=3 秒
-- 仅用于学习和研究目的
+**Q: 搜索时遇到验证码怎么办？**
 
-## License
+加 `--no-headless` 参数会弹出浏览器窗口，手动完成验证后继续。
+
+**Q: 读取文章失败？**
+
+插件会自动尝试多种方式读取。如果纯 HTTP 方式失败，会自动切换到浏览器模式。
+
+**Q: 支持哪些链接格式？**
+
+支持所有 `mp.weixin.qq.com` 开头的文章链接。
+
+## 许可证
 
 MIT
