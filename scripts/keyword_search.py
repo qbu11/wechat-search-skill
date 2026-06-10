@@ -79,7 +79,7 @@ def main():
     parser.add_argument("--format", choices=["csv", "md"], default="csv", help="输出格式（默认 csv）")
     parser.add_argument("--output", "-o", default=None, help="输出文件路径（默认自动生成）")
     parser.add_argument("--no-headless", action="store_true", help="显示浏览器窗口（默认无头模式）")
-    parser.add_argument("--strategy", choices=["auto", "requests", "browser"], default="auto", help="正文获取策略（默认 auto）")
+    parser.add_argument("--strategy", choices=["auto", "requests", "agent-browser", "browser"], default="auto", help="正文获取策略（默认 auto: requests → agent-browser → browser）")
 
     args = parser.parse_args()
 

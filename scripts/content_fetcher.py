@@ -4,14 +4,16 @@
 多策略文章正文获取模块
 ======================
 
-提供三种策略获取微信公众号文章全文：
-1. requests + BeautifulSoup — 最快，复用 article_utils.get_article_content
-2. DrissionPage 浏览器渲染 — 处理 JS 渲染内容
-3. Camoufox (可选) — 最高质量，需安装 wechat-article-for-ai
+提供四种策略获取微信公众号文章全文：
+1. agent-browser — 优先使用，轻量 CLI 工具
+2. requests + BeautifulSoup — 最快，复用 article_utils.get_article_content
+3. DrissionPage 浏览器渲染 — 处理 JS 渲染内容
+4. Camoufox (可选) — 最高质量，需安装 wechat-article-for-ai
 
-auto 模式：先试 requests，失败则用 browser。
+auto 模式：先试 requests，失败则 agent-browser，最后 DrissionPage browser。
 """
 
+import json
 import logging
 import re
 import socket
@@ -27,6 +29,7 @@ class ArticleContentFetcher:
         self.strategy = strategy
         self._page = page
         self._owns_page = False
+        self._agent_browser = None
 
     def fetch(self, url):
         """获取文章全文
@@ -39,17 +42,24 @@ class ArticleContentFetcher:
 
         if self.strategy == "requests":
             return self._fetch_by_requests(url)
+        elif self.strategy == "agent-browser":
+            return self._fetch_by_agent_browser(url)
         elif self.strategy == "browser":
             return self._fetch_by_browser(url)
         elif self.strategy == "camoufox":
             return self._fetch_by_camoufox(url)
         else:
-            # auto: 先 requests，失败则 browser
+            # auto: requests → agent-browser → DrissionPage browser
             result = self._fetch_by_requests(url)
             if result['content_md'] and len(result['content_md'].strip()) > 50:
                 return result
 
-            logger.info("requests 策略内容不足，切换到 browser 策略")
+            logger.info("requests 策略内容不足，尝试 agent-browser")
+            result = self._fetch_by_agent_browser(url)
+            if result['content_md'] and len(result['content_md'].strip()) > 50:
+                return result
+
+            logger.info("agent-browser 策略内容不足，切换到 DrissionPage browser")
             return self._fetch_by_browser(url)
 
     def fetch_batch(self, articles, delay=3):
@@ -84,6 +94,62 @@ class ArticleContentFetcher:
                 time.sleep(delay)
 
         return articles
+
+    def _fetch_by_agent_browser(self, url):
+        """使用 agent-browser CLI 获取正文"""
+        try:
+            from browser_backend import AgentBrowserBackend, detect_backend
+
+            if detect_backend() != "agent-browser":
+                logger.debug("agent-browser 不可用")
+                return self._empty_result()
+
+            if self._agent_browser is None:
+                self._agent_browser = AgentBrowserBackend()
+
+            ab = self._agent_browser
+            if not ab.open(url, timeout=20):
+                return self._empty_result()
+
+            time.sleep(2)
+
+            title = ab.get_element_text('#activity-name') or ab.get_element_text('h1') or ''
+            author = ab.get_element_text('#js_name') or ''
+
+            content_html = ab.get_element_html('#js_content') or ''
+            content_md = ''
+            if content_html:
+                content_md = self._html_to_markdown(content_html)
+
+            images_json = ab.evaluate(
+                "JSON.stringify(Array.from(document.querySelectorAll('#js_content img')).map(img => img.getAttribute('data-src') || img.src).filter(s => s && s.includes('mmbiz.qpic.cn') && !s.includes('data:image')))"
+            )
+            images = []
+            if images_json:
+                try:
+                    images = json.loads(images_json)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            publish_time = ''
+            page_html = ab.get_page_html() or ''
+            ts_match = re.search(r'var\s+create_time\s*=\s*"(\d+)"', page_html)
+            if ts_match:
+                from datetime import datetime
+                ts = int(ts_match.group(1))
+                publish_time = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+
+            return {
+                'title': title,
+                'content_md': content_md,
+                'images': images,
+                'author': author,
+                'publish_time': publish_time,
+            }
+
+        except Exception as e:
+            logger.warning("agent-browser 策略失败: %s", e)
+            return self._empty_result()
 
     def _fetch_by_requests(self, url):
         """使用 requests + BeautifulSoup 获取正文"""

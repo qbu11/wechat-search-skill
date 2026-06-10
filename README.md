@@ -15,14 +15,18 @@ Claude Code 插件，让 AI 助手能搜索和读取微信公众号文章。
 # 1. 下载插件
 git clone https://github.com/qbu11/wechat-search-skill.git ~/.claude/skills/wechat-search
 
-# 2. 安装依赖
+# 2. 安装 Python 依赖
 cd ~/.claude/skills/wechat-search
 pip install -r scripts/requirements.txt
 
-# 3. 安装防误用钩子（可选，推荐）
+# 3. 安装 agent-browser（推荐，可选）
+npm install -g @vercel-labs/agent-browser
+# 或者不安装，运行时会自动通过 npx 使用
+
+# 4. 安装防误用钩子（可选，推荐）
 cp hooks/block-webfetch-wechat.js ~/.claude/hooks/
 
-# 4. 安装默认规则（可选，推荐）
+# 5. 安装默认规则（可选，推荐）
 cp docs/wechat-reading.md ~/.claude/rules/
 ```
 
@@ -92,6 +96,7 @@ python scripts/keyword_search.py "AI大模型" --pages 3 -o result.csv
 └── scripts/
     ├── requirements.txt            # Python 依赖
     ├── keyword_search.py           # 关键词搜索（命令行工具）
+    ├── browser_backend.py          # 浏览器后端抽象层（agent-browser / DrissionPage）
     ├── content_fetcher.py          # 文章正文获取（核心）
     ├── sogou_search.py             # 搜狗微信搜索
     ├── url_resolver.py             # 链接解析
@@ -103,6 +108,18 @@ python scripts/keyword_search.py "AI大模型" --pages 3 -o result.csv
 
 - Python 3.8+
 - Chrome 浏览器
+- Node.js（可选，用于 agent-browser）
+
+## 浏览器后端
+
+插件自动选择最优浏览器后端，优先级：
+
+1. **agent-browser CLI** — 轻量、快速，无需启动额外 Chrome 实例
+2. **DrissionPage** — 完整浏览器自动化，支持验证码处理
+
+如果系统已安装 `agent-browser`（`which agent-browser`），则自动优先使用。
+未安装时会尝试通过 npm/npx 自动安装（需 Node.js）。
+若都不可用，自动回退到 DrissionPage + Chrome。
 
 ## 常见问题
 

@@ -5,15 +5,18 @@
 ================
 
 通过搜狗微信搜索 (weixin.sogou.com) 按关键词搜索微信公众号文章。
-使用 DrissionPage 操控 Chrome 绕过反爬，无需微信登录态。
+优先使用 agent-browser CLI，不可用时回退到 DrissionPage。
 """
 
+import json
 import logging
 import random
 import re
 import socket
 import time
 from datetime import datetime, timedelta
+
+from browser_backend import AgentBrowserBackend, detect_backend
 
 logger = logging.getLogger("wechat-search")
 
@@ -30,14 +33,15 @@ _USER_AGENTS = [
 class SogouWeChatSearch:
     """搜狗微信关键词搜索
 
-    使用 DrissionPage 操控 Chrome 访问搜狗微信搜索，
-    提取文章列表并返回结构化数据。
+    优先使用 agent-browser CLI，不可用时回退到 DrissionPage。
     """
 
     def __init__(self, headless=True, page=None):
         self.headless = headless
         self._page = page
         self._owns_page = page is None
+        self._backend = detect_backend()
+        self._agent_browser = None
 
     @property
     def page(self):
@@ -68,16 +72,123 @@ class SogouWeChatSearch:
         return ChromiumPage(addr_or_opts=co)
 
     def search(self, keyword, max_pages=3, days=None):
-        """搜索关键词，返回文章列表
+        """搜索关键词，返回文章列表"""
+        if self._backend == "agent-browser":
+            result = self._search_by_agent_browser(keyword, max_pages, days)
+            if result:
+                return result
+            logger.info("agent-browser 搜索失败，回退到 DrissionPage")
 
-        Args:
-            keyword: 搜索关键词
-            max_pages: 最大搜索页数（默认 3，每页约 10 篇）
-            days: 时间范围（天数），None 表示不限
+        return self._search_by_drissionpage(keyword, max_pages, days)
 
-        Returns:
-            list[dict]: 文章列表
+    def _search_by_agent_browser(self, keyword, max_pages=3, days=None):
+        """使用 agent-browser 执行搜索"""
+        all_articles = []
+
+        try:
+            if self._agent_browser is None:
+                self._agent_browser = AgentBrowserBackend()
+
+            ab = self._agent_browser
+            search_url = f"https://weixin.sogou.com/weixin?type=2&query={keyword}"
+            logger.info("agent-browser 搜狗搜索: %s (最多 %d 页)", keyword, max_pages)
+
+            if not ab.open(search_url, timeout=20):
+                return None
+
+            time.sleep(random.uniform(2, 4))
+
+            page_html = ab.get_page_html() or ''
+            if '/antispider/' in (ab.get_current_url() or '') or '请输入验证码' in page_html:
+                logger.warning("agent-browser 检测到验证码，无法自动处理")
+                return None
+
+            for page_num in range(max_pages):
+                logger.info("agent-browser 解析第 %d/%d 页...", page_num + 1, max_pages)
+
+                articles = self._extract_results_agent_browser(ab)
+                all_articles.extend(articles)
+                logger.info("第 %d 页提取到 %d 篇文章", page_num + 1, len(articles))
+
+                if page_num < max_pages - 1:
+                    if not self._next_page_agent_browser(ab):
+                        logger.info("没有更多页面了")
+                        break
+                    time.sleep(random.uniform(2, 5))
+
+        except Exception as e:
+            logger.error("agent-browser 搜索出错: %s", e)
+            if not all_articles:
+                return None
+
+        if days is not None:
+            all_articles = self._filter_by_days(all_articles, days)
+
+        if all_articles:
+            logger.info("agent-browser 搜索完成，共获取 %d 篇文章", len(all_articles))
+        return all_articles if all_articles else None
+
+    def _extract_results_agent_browser(self, ab):
+        """通过 agent-browser 的 JS 执行提取搜索结果"""
+        js = """
+        JSON.stringify(Array.from(document.querySelectorAll('.news-list > li, ul.news-list li')).map(item => {
+            const titleEl = item.querySelector('h3 a') || item.querySelector('.txt-box h3 a');
+            const accountEl = item.querySelector('.s-p .all-time-y2') || item.querySelector('.account') || item.querySelector('.s-p a');
+            const summaryEl = item.querySelector('.txt-info') || item.querySelector('p.txt-info');
+            const spEl = item.querySelector('.s-p');
+            let href = titleEl ? (titleEl.getAttribute('href') || '') : '';
+            if (href.startsWith('//')) href = 'https:' + href;
+            else if (href.startsWith('/')) href = 'https://weixin.sogou.com' + href;
+            let timestamp = null;
+            let date = '';
+            if (spEl) {
+                const html = spEl.innerHTML || '';
+                const m = html.match(/timeConvert\\('(\\d+)'\\)/);
+                if (m) {
+                    timestamp = parseInt(m[1]);
+                    date = new Date(timestamp * 1000).toISOString().slice(0, 19).replace('T', ' ');
+                }
+            }
+            return {
+                title: titleEl ? titleEl.textContent.trim() : '',
+                account: accountEl ? accountEl.textContent.trim() : '',
+                sogou_link: href,
+                summary: summaryEl ? summaryEl.textContent.trim() : '',
+                timestamp: timestamp,
+                date: date
+            };
+        }).filter(a => a.title))
         """
+        result = ab.evaluate(js)
+        if not result:
+            return []
+
+        try:
+            articles = json.loads(result)
+            return articles
+        except (json.JSONDecodeError, TypeError):
+            return []
+
+    def _next_page_agent_browser(self, ab):
+        """使用 agent-browser 翻页"""
+        js = """
+        (function() {
+            const btn = document.querySelector('#sogou_next') || document.querySelector('a#sogou_next');
+            if (btn) { btn.click(); return true; }
+            const links = Array.from(document.querySelectorAll('a'));
+            const next = links.find(a => a.textContent.includes('下一页'));
+            if (next) { next.click(); return true; }
+            return false;
+        })()
+        """
+        result = ab.evaluate(js)
+        if result and result.strip().lower() == 'true':
+            time.sleep(random.uniform(1, 3))
+            return True
+        return False
+
+    def _search_by_drissionpage(self, keyword, max_pages=3, days=None):
+        """使用 DrissionPage 执行搜索（原始实现）"""
         all_articles = []
 
         try:

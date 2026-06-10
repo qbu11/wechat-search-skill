@@ -6,12 +6,16 @@
 
 将搜狗微信搜索的跳转链接转换为 mp.weixin.qq.com 真实 URL。
 搜狗搜索结果中的链接是搜狗中间页，需要通过浏览器跟随跳转获取真实地址。
+
+优先使用 agent-browser，不可用时回退到 DrissionPage。
 """
 
 import logging
 import random
 import socket
 import time
+
+from browser_backend import AgentBrowserBackend, detect_backend
 
 logger = logging.getLogger("wechat-search")
 
@@ -22,6 +26,8 @@ class SogouUrlResolver:
     def __init__(self, page=None):
         self._page = page
         self._owns_page = page is None
+        self._backend = detect_backend()
+        self._agent_browser = None
 
     @property
     def page(self):
@@ -49,21 +55,43 @@ class SogouUrlResolver:
         return ChromiumPage(addr_or_opts=co)
 
     def resolve(self, sogou_url, timeout=15):
-        """将搜狗跳转链接转换为 mp.weixin.qq.com 真实 URL
-
-        Args:
-            sogou_url: 搜狗搜索结果中的链接
-            timeout: 等待跳转的超时时间（秒）
-
-        Returns:
-            str: mp.weixin.qq.com 真实 URL，失败返回原始 URL
-        """
+        """将搜狗跳转链接转换为 mp.weixin.qq.com 真实 URL"""
         if not sogou_url:
             return sogou_url
 
         if 'mp.weixin.qq.com' in sogou_url:
             return sogou_url
 
+        if self._backend == "agent-browser":
+            result = self._resolve_by_agent_browser(sogou_url, timeout)
+            if result and 'mp.weixin.qq.com' in result:
+                return result
+            logger.debug("agent-browser 解析失败，回退到 DrissionPage")
+
+        return self._resolve_by_drissionpage(sogou_url, timeout)
+
+    def _resolve_by_agent_browser(self, sogou_url, timeout=15):
+        """使用 agent-browser 跟随跳转"""
+        try:
+            if self._agent_browser is None:
+                self._agent_browser = AgentBrowserBackend()
+
+            ab = self._agent_browser
+            if not ab.open(sogou_url, timeout=timeout):
+                return None
+
+            url = ab.wait_for_url_contains('mp.weixin.qq.com', timeout=timeout)
+            if url and 'mp.weixin.qq.com' in url:
+                logger.debug("agent-browser 链接转换成功: %s...", url[:80])
+                return url
+            return None
+
+        except Exception as e:
+            logger.debug("agent-browser 链接转换异常: %s", e)
+            return None
+
+    def _resolve_by_drissionpage(self, sogou_url, timeout=15):
+        """使用 DrissionPage 跟随跳转"""
         try:
             self.page.get(sogou_url)
 
