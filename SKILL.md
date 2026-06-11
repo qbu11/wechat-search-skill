@@ -16,13 +16,12 @@ description: Use this skill when the user wants to search WeChat Official Accoun
 
 ### 浏览器后端（优先级从高到低）
 
-1. **agent-browser CLI**（推荐）— 轻量级，无需额外 Chrome 实例
-   - 已安装则自动使用：`agent-browser --version`
-   - 未安装时自动尝试：`npm install -g @vercel-labs/agent-browser`
-   - 或通过 npx 使用：`npx -y @vercel-labs/agent-browser`
-   - 仓库：https://github.com/vercel-labs/agent-browser
-2. **DrissionPage + Chrome**（可选）— 完整浏览器自动化，处理验证码等复杂场景
+1. **DrissionPage + Chrome**（推荐）— 完整浏览器自动化，反指纹+验证码处理
    - 安装：`pip install -r scripts/requirements-full.txt`
+2. **agent-browser CLI**（轻量回退）— 无需 Chrome 实例，适合沙盒环境
+   - 安装：`npm install -g agent-browser`
+   - 或通过 npx：`npx -y agent-browser`
+   - 仓库：https://github.com/vercel-labs/agent-browser
 
 ## 用法
 
@@ -56,15 +55,15 @@ python scripts/keyword_search.py "关键词" --no-headless
 | `--format csv\|md` | csv | 输出格式 |
 | `--output FILE` / `-o` | 自动生成 | 输出文件路径 |
 | `--no-headless` | 无头模式 | 显示浏览器窗口 |
-| `--strategy auto\|requests\|agent-browser\|browser` | auto | 正文获取策略（auto: requests → agent-browser → browser） |
+| `--strategy auto\|requests\|browser\|agent-browser` | auto | 正文获取策略（auto: requests → DrissionPage → agent-browser） |
 
 ## 工作流程
 
-1. 检测浏览器后端（agent-browser CLI > DrissionPage）
+1. 检测浏览器后端（DrissionPage > agent-browser）
 2. 打开搜狗微信搜索，输入关键词
 3. 解析搜索结果，提取文章标题、公众号、时间、摘要
 4. 跟随搜狗跳转链接，获取 mp.weixin.qq.com 真实 URL
-5. 多策略获取正文（auto: 先 requests，再 agent-browser，最后 DrissionPage 浏览器渲染）
+5. 多策略获取正文（auto: 先 requests，再 DrissionPage 浏览器渲染，最后 agent-browser）
 6. 输出 CSV 或 Markdown
 
 ## 输出格式

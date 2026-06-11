@@ -73,13 +73,18 @@ class SogouWeChatSearch:
 
     def search(self, keyword, max_pages=3, days=None):
         """搜索关键词，返回文章列表"""
+        if self._backend == "drissionpage":
+            return self._search_by_drissionpage(keyword, max_pages, days)
+
         if self._backend == "agent-browser":
             result = self._search_by_agent_browser(keyword, max_pages, days)
             if result:
                 return result
-            logger.info("agent-browser 搜索失败，回退到 DrissionPage")
+            logger.info("agent-browser 搜索失败，尝试 DrissionPage")
+            return self._search_by_drissionpage(keyword, max_pages, days)
 
-        return self._search_by_drissionpage(keyword, max_pages, days)
+        logger.warning("无可用浏览器后端，无法执行搜索")
+        return []
 
     def _search_by_agent_browser(self, keyword, max_pages=3, days=None):
         """使用 agent-browser 执行搜索"""

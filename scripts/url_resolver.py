@@ -62,13 +62,17 @@ class SogouUrlResolver:
         if 'mp.weixin.qq.com' in sogou_url:
             return sogou_url
 
+        if self._backend == "drissionpage":
+            return self._resolve_by_drissionpage(sogou_url, timeout)
+
         if self._backend == "agent-browser":
             result = self._resolve_by_agent_browser(sogou_url, timeout)
             if result and 'mp.weixin.qq.com' in result:
                 return result
             logger.debug("agent-browser 解析失败，回退到 DrissionPage")
+            return self._resolve_by_drissionpage(sogou_url, timeout)
 
-        return self._resolve_by_drissionpage(sogou_url, timeout)
+        return sogou_url
 
     def _resolve_by_agent_browser(self, sogou_url, timeout=15):
         """使用 agent-browser 跟随跳转"""

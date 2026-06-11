@@ -22,16 +22,23 @@ logger = logging.getLogger("wechat-search")
 
 
 def detect_backend():
-    """检测可用的浏览器后端，返回 'agent-browser' 或 'drissionpage'"""
+    """检测可用的浏览器后端，返回 'drissionpage' 或 'agent-browser'"""
+    try:
+        import DrissionPage
+        logger.info("检测到 DrissionPage")
+        return "drissionpage"
+    except ImportError:
+        pass
+
     if shutil.which("agent-browser"):
-        logger.info("检测到 agent-browser CLI")
+        logger.info("DrissionPage 未安装，使用 agent-browser CLI")
         return "agent-browser"
 
     if _try_install_agent_browser():
         return "agent-browser"
 
-    logger.info("回退到 DrissionPage 后端")
-    return "drissionpage"
+    logger.warning("无可用浏览器后端（DrissionPage 未安装，agent-browser 不可用）")
+    return "none"
 
 
 def _try_install_agent_browser():

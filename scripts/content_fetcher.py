@@ -49,18 +49,18 @@ class ArticleContentFetcher:
         elif self.strategy == "camoufox":
             return self._fetch_by_camoufox(url)
         else:
-            # auto: requests → agent-browser → DrissionPage browser
+            # auto: requests → DrissionPage browser → agent-browser
             result = self._fetch_by_requests(url)
             if result['content_md'] and len(result['content_md'].strip()) > 50:
                 return result
 
-            logger.info("requests 策略内容不足，尝试 agent-browser")
-            result = self._fetch_by_agent_browser(url)
+            logger.info("requests 策略内容不足，尝试 DrissionPage browser")
+            result = self._fetch_by_browser(url)
             if result['content_md'] and len(result['content_md'].strip()) > 50:
                 return result
 
-            logger.info("agent-browser 策略内容不足，切换到 DrissionPage browser")
-            return self._fetch_by_browser(url)
+            logger.info("DrissionPage 不可用或内容不足，尝试 agent-browser")
+            return self._fetch_by_agent_browser(url)
 
     def fetch_batch(self, articles, delay=3):
         """批量获取文章正文
