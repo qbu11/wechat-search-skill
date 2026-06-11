@@ -189,6 +189,12 @@ class SogouWeChatSearch:
 
     def _search_by_drissionpage(self, keyword, max_pages=3, days=None):
         """使用 DrissionPage 执行搜索（原始实现）"""
+        try:
+            from DrissionPage import ChromiumPage, ChromiumOptions
+        except ImportError:
+            logger.warning("DrissionPage 未安装，无法使用浏览器后端搜索")
+            return []
+
         all_articles = []
 
         try:

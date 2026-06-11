@@ -12,8 +12,7 @@ description: Use this skill when the user wants to search WeChat Official Accoun
 ## 前置条件
 
 - Python >= 3.8
-- Chrome 浏览器
-- 依赖安装：`pip install -r scripts/requirements.txt`
+- 依赖安装：`pip install -r scripts/requirements.txt`（仅 beautifulsoup4 + markdownify）
 
 ### 浏览器后端（优先级从高到低）
 
@@ -22,7 +21,8 @@ description: Use this skill when the user wants to search WeChat Official Accoun
    - 未安装时自动尝试：`npm install -g @vercel-labs/agent-browser`
    - 或通过 npx 使用：`npx -y @vercel-labs/agent-browser`
    - 仓库：https://github.com/vercel-labs/agent-browser
-2. **DrissionPage + Chrome** — 完整浏览器自动化，处理验证码等复杂场景
+2. **DrissionPage + Chrome**（可选）— 完整浏览器自动化，处理验证码等复杂场景
+   - 安装：`pip install -r scripts/requirements-full.txt`
 
 ## 用法
 

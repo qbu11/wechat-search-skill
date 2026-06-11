@@ -107,6 +107,9 @@ class SogouUrlResolver:
             logger.warning("链接转换超时，当前 URL: %s...", final_url[:80])
             return final_url
 
+        except ImportError:
+            logger.warning("DrissionPage 未安装，无法回退到浏览器链接解析")
+            return sogou_url
         except Exception as e:
             logger.error("链接转换失败: %s", e)
             return sogou_url

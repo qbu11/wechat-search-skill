@@ -152,7 +152,7 @@ class ArticleContentFetcher:
             return self._empty_result()
 
     def _fetch_by_requests(self, url):
-        """使用 requests + BeautifulSoup 获取正文"""
+        """使用 urllib + BeautifulSoup 获取正文"""
         try:
             from article_utils import get_article_content
 
@@ -180,8 +180,9 @@ class ArticleContentFetcher:
             return self._empty_result()
 
     def _extract_metadata_requests(self, url, headers):
-        """用 requests 提取文章元数据"""
-        import requests
+        """用 urllib 提取文章元数据"""
+        import urllib.request
+        import urllib.error
         import bs4
 
         title = ''
@@ -190,11 +191,13 @@ class ArticleContentFetcher:
         images = []
 
         try:
-            resp = requests.get(url, headers=headers, timeout=30)
-            if resp.status_code != 200:
+            req = urllib.request.Request(url, headers=headers)
+            resp = urllib.request.urlopen(req, timeout=30)
+            if resp.status != 200:
                 return title, author, publish_time, images
 
-            soup = bs4.BeautifulSoup(resp.text, 'lxml')
+            resp_text = resp.read().decode(resp.headers.get_content_charset() or 'utf-8', errors='replace')
+            soup = bs4.BeautifulSoup(resp_text, 'html.parser')
 
             title_el = soup.select_one('#activity-name, .rich_media_title, h1')
             if title_el:
@@ -204,7 +207,7 @@ class ArticleContentFetcher:
             if author_el:
                 author = author_el.get_text(strip=True)
 
-            ts_match = re.search(r'var\s+create_time\s*=\s*"(\d+)"', resp.text)
+            ts_match = re.search(r'var\s+create_time\s*=\s*"(\d+)"', resp_text)
             if ts_match:
                 from datetime import datetime
                 ts = int(ts_match.group(1))
@@ -224,6 +227,11 @@ class ArticleContentFetcher:
         """使用 DrissionPage 浏览器渲染后提取 DOM"""
         try:
             page = self._get_browser_page()
+        except ImportError:
+            logger.warning("DrissionPage 未安装，browser 策略不可用")
+            return self._empty_result()
+
+        try:
             page.get(url)
 
             page.wait.doc_loaded(timeout=15)
@@ -277,14 +285,14 @@ class ArticleContentFetcher:
             import bs4
             from article_utils import md, _preprocess_lazy_images
 
-            soup = bs4.BeautifulSoup(html, 'lxml')
+            soup = bs4.BeautifulSoup(html, 'html.parser')
             _preprocess_lazy_images(soup)
             return md(soup, keep_inline_images_in=["section", "span"])
         except Exception as e:
             logger.debug("HTML→Markdown 转换失败: %s", e)
             try:
                 import bs4
-                soup = bs4.BeautifulSoup(html, 'lxml')
+                soup = bs4.BeautifulSoup(html, 'html.parser')
                 return soup.get_text(separator='\n', strip=True)
             except Exception:
                 return html

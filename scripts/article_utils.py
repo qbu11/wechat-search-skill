@@ -12,9 +12,10 @@ import html
 import json
 import logging
 import re
+import urllib.request
+import urllib.error
 
 import bs4
-import requests
 from markdownify import MarkdownConverter
 
 logger = logging.getLogger("wechat-search")
@@ -319,15 +320,17 @@ def get_article_content(url, headers, max_retries=3, retry_delay=2):
 
     for attempt in range(max_retries):
         try:
-            response = requests.get(url, headers=headers, timeout=30)
-            if response.status_code != 200:
-                logger.warning("请求失败，状态码: %d，尝试 %d/%d", response.status_code, attempt + 1, max_retries)
+            req = urllib.request.Request(url, headers=headers)
+            response = urllib.request.urlopen(req, timeout=30)
+            if response.status != 200:
+                logger.warning("请求失败，状态码: %d，尝试 %d/%d", response.status, attempt + 1, max_retries)
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                     continue
-                return f"请求失败，状态码: {response.status_code}"
+                return f"请求失败，状态码: {response.status}"
 
-            soup = bs4.BeautifulSoup(response.text, 'lxml')
+            response_text = response.read().decode(response.headers.get_content_charset() or 'utf-8', errors='replace')
+            soup = bs4.BeautifulSoup(response_text, 'html.parser')
 
             _preprocess_lazy_images(soup)
 
@@ -375,18 +378,16 @@ def get_article_content(url, headers, max_retries=3, retry_delay=2):
                     content = _extract_all_text_content(soup)
                 return content
 
-        except requests.exceptions.Timeout:
-            logger.warning("请求超时，尝试 %d/%d", attempt + 1, max_retries)
+        except urllib.error.URLError as e:
+            reason = getattr(e, 'reason', e)
+            if 'timed out' in str(reason):
+                logger.warning("请求超时，尝试 %d/%d", attempt + 1, max_retries)
+            else:
+                logger.warning("请求异常: %s，尝试 %d/%d", reason, attempt + 1, max_retries)
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
             else:
-                return "获取文章内容失败: 请求超时"
-        except requests.exceptions.RequestException as e:
-            logger.warning("请求异常: %s，尝试 %d/%d", e, attempt + 1, max_retries)
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-            else:
-                return f"获取文章内容失败: {str(e)}"
+                return f"获取文章内容失败: {str(reason)}"
         except Exception as e:
             logger.error("获取文章内容时发生异常: %s", e)
             return f"获取文章内容失败: {str(e)}"
