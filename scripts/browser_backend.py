@@ -35,10 +35,10 @@ def detect_backend():
 
 
 def _try_install_agent_browser():
-    """尝试从 vercel-labs/agent-browser 安装"""
+    """尝试从 npm 安装 agent-browser"""
     try:
         result = subprocess.run(
-            ["npm", "install", "-g", "@vercel-labs/agent-browser"],
+            ["npm", "install", "-g", "agent-browser"],
             capture_output=True, text=True, timeout=60
         )
         if result.returncode == 0 and shutil.which("agent-browser"):
@@ -49,7 +49,7 @@ def _try_install_agent_browser():
 
     try:
         result = subprocess.run(
-            ["npx", "-y", "@vercel-labs/agent-browser", "--version"],
+            ["npx", "-y", "agent-browser", "--version"],
             capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0:
@@ -71,7 +71,7 @@ class AgentBrowserBackend:
     def _resolve_cmd(self):
         if shutil.which("agent-browser"):
             return ["agent-browser"]
-        return ["npx", "-y", "@vercel-labs/agent-browser"]
+        return ["npx", "-y", "agent-browser"]
 
     def _run(self, *args, timeout=30):
         cmd = self._cmd + list(args)
@@ -107,7 +107,7 @@ class AgentBrowserBackend:
 
     def evaluate(self, js_code, timeout=15):
         """在页面执行 JavaScript 并返回结果"""
-        return self._run("evaluate", js_code, timeout=timeout)
+        return self._run("eval", js_code, timeout=timeout)
 
     def click(self, ref):
         """点击元素（用 snapshot 中的 @ref）"""
